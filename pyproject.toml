@@ -1,0 +1,49 @@
+[project]
+name = "peer-hex-explorer"
+version = "0.1.0"
+description = "Find the BEAHIV cells that most resemble a crime hotspot in feature space"
+readme = "README.md"
+authors = [
+    { name = "Andrew Smith", email = "a.p.smith@leeds.ac.uk" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "beahiv[arrow]",
+    "duckdb>=1.5.4",
+    "numpy>=2.5",
+    "pandas>=3.0",
+    "pillow>=11.0",
+    "plotly>=6.0",
+    "pyarrow>=17",
+    "pydeck>=0.9",
+    "pyproj>=3.6",
+    "python-dotenv>=1.2.2",
+    "shapely>=2.0",
+    "streamlit>=1.59.2",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.15.22",
+    "ty>=0.0.84",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["azure: needs Azure credentials (skipped without them)"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["A", "B", "E", "F", "I", "SIM", "UP"]
+ignore = ["E501"]
+
+[tool.uv.sources]
+beahiv = { git = "https://github.com/safer-streets/beahiv", tag = "v0.0.2" }

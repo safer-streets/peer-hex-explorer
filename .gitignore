@@ -1,0 +1,10 @@
+__pycache__
+.ruff_cache
+.pytest_cache
+.venv*
+.env
+.streamlit/secrets.toml
+secrets.toml
+.vscode
+cache/
+.claude/

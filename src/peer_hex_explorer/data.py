@@ -1,0 +1,319 @@
+"""Everything the app reads, all of it through DuckDB straight onto the Azure parquet store.
+
+The feature matrix is built once per process at startup (`characterisation`) and shared by
+every session; the crime counts and place names are small cached queries keyed on what the user
+picked. Nothing here is read from local files.
+"""
+
+import resource
+import time
+from dataclasses import dataclass
+from typing import get_args
+
+import duckdb
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import shapely
+import streamlit as st
+from beahiv import cell_polygons, k_ring
+from duckdb import list_type
+from duckdb.func import PythonUDFType
+from duckdb.sqltypes import BIGINT, INTEGER
+from pyproj import Transformer
+
+from peer_hex_explorer.database import SOURCE, duckdb_connector
+from peer_hex_explorer.features import percentiles, scale_features
+from peer_hex_explorer.utils import CrimeType, Force, fix_force_name
+
+# deck.gl gets the geometry as JSON over the websocket on every rerun, so trim it at source. 1e-6
+# degrees is ~0.1m, far below anything visible.
+COORD_DECIMALS = 6
+
+_TO_WGS84 = Transformer.from_crs("EPSG:27700", "EPSG:4326", always_xy=True)
+
+
+@st.cache_resource
+def _base_con() -> duckdb.DuckDBPyConnection:
+    return duckdb_connector(azure_connstr=st.secrets["azure_storage_connstr"])
+
+
+def get_con() -> duckdb.DuckDBPyConnection:
+    """
+    Per-script-run handle on the shared in-memory DuckDB instance.
+
+    st.cache_resource shares one connection across all sessions, but Streamlit runs each session's script in its
+    own thread and a DuckDBPyConnection is not safe for concurrent use across threads: simultaneous users could
+    otherwise interleave queries on it. Cursors are cheap to create and share the base connection's extensions
+    and GLOBAL settings (including the Azure credentials) while giving each rerun its own thread-safe session.
+    """
+    return _base_con().cursor()
+
+
+# --- the feature matrix ---------------------------------------------------------------------------
+
+
+# Count hospital POI in the cell's k-ring:
+# cell plus its 6 neighbours - the grid-native analogue of the H3 "hospital in the parent cell"
+# rule, and much cheaper than a spatial join (no geometry is touched at all, just id arithmetic).
+# DuckDB has no BEAHIV function, so the ring comes from a vectorised (type="arrow") UDF over
+# beahiv.k_ring, returning BIGINT[]. k is a parameter so the neighbourhood can be widened to k=2
+# (19 cells) without touching the UDF.
+def _k_ring(spatial_id: pa.ChunkedArray, k: pa.ChunkedArray) -> pa.Array:
+    return pa.array(
+        [k_ring(cell, ring) for cell, ring in zip(spatial_id.to_pylist(), k.to_pylist(), strict=True)],
+        type=pa.list_(pa.int64()),
+    )
+
+
+def _register_k_ring(con: duckdb.DuckDBPyConnection) -> None:
+    # re-registering raises CatalogException once the UDF has executed, so skip it if the catalog
+    # already has the name - the function is pure, so an existing registration is the same function
+    (registered,) = con.execute(
+        "SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'beahiv_k_ring'"
+    ).fetchone() or (0,)
+    if not registered:
+        con.create_function("beahiv_k_ring", _k_ring, [BIGINT, INTEGER], list_type(BIGINT), type=PythonUDFType.ARROW)
+
+
+# beahiv-characterisation.ipynb's query, minus the IMD columns, oa21cd and lsoa21cd (context, not
+# features: hex_features.NON_FEATURE_COLUMNS) and with three changes:
+# - n_stops is COALESCEd: a NULL there is a structural zero (see features.clean_features), so it is
+#   fixed at source rather than downstream
+# - Northern Ireland is excluded. The BEAHIV grid covers it, but NI matches no E&W boundary so every
+#   geography column is NULL (12,136 cells, all with msoa21cd, lsoa21cd and pfa24cd NULL together).
+#   It has to go *before* scaling, or NI cells move every median, IQR and percentile.
+# - pfa24cd comes along as context (one per cell: max overlap) for the within-force scope
+# bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
+CHARACTERISATION_QUERY = f"""
+WITH bh_hosp_kring AS (
+    -- Expand the ~8.6k hospital POI over their rings rather than expanding the hexes over theirs:
+    -- hex distance is symmetric, so "hospitals in this cell's k-ring" is the same count either way,
+    -- and this one unnests thousands of rows instead of hundreds of thousands. Cells with no hospital
+    -- nearby are simply absent, hence the COALESCE below.
+    -- note that "hospital" includes various clinics, so places like Harley St have an extremely high count
+    WITH hosp AS (
+        SELECT beahiv202_id
+        FROM read_parquet('{SOURCE}/extract/poi.parquet')
+        WHERE basic_category IN ('hospital', 'emergency_department')
+    )
+    SELECT ring.cell_id AS spatial_id, COUNT(*) AS n_hospital
+    FROM hosp, UNNEST(beahiv_k_ring(hosp.beahiv202_id, 1)) AS ring(cell_id)
+    GROUP BY ring.cell_id
+)
+SELECT
+    hex.spatial_id,
+    hex.pfa24cd,
+    hex.retail_centre_distance,
+    COALESCE(hex.urban_overlap_area / hex.cell_area, 0) AS prop_urban,
+    COALESCE(hex.suburban_overlap_area / hex.cell_area, 0) AS prop_suburban,
+    COALESCE(hex.road_overlap_length, 0) AS road_overlap_length,
+    COALESCE(junctions.road_intersection_count, 0) AS road_intersections,
+    COALESCE(hex.greenspace_overlap_area / hex.cell_area, 0) AS prop_greenspace,
+    -- we can't reliably distinguish 11+ schools in Wales as the age data is mostly missing
+    COALESCE(schools.sum_overlap_area / hex.cell_area, 0) AS school_isochrone_depth,
+    COALESCE(poi.n_alcohol, 0) AS n_alcohol,
+    COALESCE(poi.n_food, 0) AS n_food,
+    COALESCE(hosp.n_hospital, 0) AS n_hospital,
+    COALESCE(naptan.n_stops, 0) AS n_stops,
+    COALESCE(food_outlets.n_takeaways, 0) AS n_takeaways,
+    population.residential_population,
+    population.workplace_population
+FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet') hex
+LEFT JOIN (
+    SELECT
+        poi.beahiv202_id AS spatial_id,
+        COUNT(*) FILTER (WHERE basic_category IN ('bar', 'alcoholic_beverage_venue', 'lounge', 'inn')) AS n_alcohol,
+        COUNT(*) FILTER (WHERE basic_category IN ('casual_eatery', 'fast_food_restaurant', 'food_service')) AS n_food, -- removed 'restaurant'
+    FROM read_parquet('{SOURCE}/extract/poi.parquet') poi
+    GROUP BY poi.beahiv202_id
+) poi ON hex.spatial_id = poi.spatial_id
+-- With H3 hexes hospitals were counted in the PARENT cell, so siblings sharing a parent were
+-- captured too. These hexes have no parent, so bh_hosp_kring counts hospital POI in the cell's
+-- k-ring of 1 (the cell and its 6 neighbours) instead - a cell centre lies within ~350m, i.e. a
+-- tighter catchment than the 500m buffer bh_hosp uses.
+LEFT JOIN bh_hosp_kring hosp ON hex.spatial_id = hosp.spatial_id
+-- naptan public transport stops per hex
+LEFT JOIN (
+    SELECT beahiv202_id AS spatial_id, COUNT(*) AS n_stops
+    FROM read_parquet('{SOURCE}/extract/naptan.parquet')
+    GROUP BY beahiv202_id
+) naptan ON hex.spatial_id = naptan.spatial_id
+LEFT JOIN (
+    SELECT beahiv202_id AS spatial_id, COUNT(*) AS n_takeaways
+    FROM read_parquet('{SOURCE}/extract/food_outlets.parquet')
+    WHERE business_type = 'Takeaway/sandwich shop'
+    GROUP BY beahiv202_id
+) food_outlets ON hex.spatial_id = food_outlets.spatial_id
+LEFT JOIN (
+    SELECT spatial_id, SUM(overlap_area) AS sum_overlap_area
+    FROM read_parquet('{SOURCE}/transform/beahiv202_schools_lookup.parquet')
+    GROUP BY spatial_id
+) schools ON hex.spatial_id = schools.spatial_id
+LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_road_intersection_counts.parquet') junctions ON hex.spatial_id = junctions.spatial_id
+LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_population_counts.parquet') population ON hex.spatial_id = population.spatial_id
+WHERE hex.msoa21cd IS NOT NULL  -- NI has no MSOA codes
+ORDER BY hex.spatial_id
+"""
+
+CONTEXT_COLUMNS = ["spatial_id", "pfa24cd"]
+
+
+def query_characterisation(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """The raw (unscaled) characterisation, indexed by spatial_id in ascending order."""
+    _register_k_ring(con)
+    columns = con.sql(CHARACTERISATION_QUERY).fetchnumpy()
+    spatial_id = np.asarray(columns.pop("spatial_id"), dtype=np.int64)
+    if len(np.unique(spatial_id)) != len(spatial_id):
+        raise ValueError("characterisation has duplicate spatial_ids: a join upstream has fanned out")
+    # not np.ma.filled(..., None): a fill value of None means "the default", which for strings is "?"
+    raw_pfa = np.ma.asarray(columns.pop("pfa24cd"))
+    pfa24cd = np.asarray(raw_pfa, dtype=object).copy()
+    pfa24cd[np.ma.getmaskarray(raw_pfa)] = None
+    # NULLs arrive as masked entries; the feature pipeline wants them as NaN
+    features = {name: np.ma.filled(np.ma.asarray(values, dtype="float64"), np.nan) for name, values in columns.items()}
+    return pd.DataFrame({"pfa24cd": pfa24cd, **features}, index=pd.Index(spatial_id, name="spatial_id"))
+
+
+@dataclass(frozen=True, eq=False)
+class Characterisation:
+    """The scaled national feature matrix and what the app needs alongside it.
+
+    Rows are in ascending spatial_id order, which is what makes `rows_of` a binary search.
+    """
+
+    spatial_id: np.ndarray  # int64 (n,)
+    pfa24cd: np.ndarray  # object (n,): the cell's force code, None for the one (Scottish border) cell with no force
+    columns: tuple[str, ...]
+    scaled: np.ndarray  # float32 (n, p): robust-scaled, what distances are measured in
+    percentile: np.ndarray  # float32 (n, p): national percentile per column, -100..+100, for the radars
+    imputed_pct: dict[str, float]  # share of each raw column that was median-filled
+    build_seconds: float
+    peak_rss_mb: float
+
+    def rows_of(self, ids) -> np.ndarray:
+        """Row index for each id, -1 where an id isn't in the matrix."""
+        ids = np.asarray(ids, dtype=np.int64)
+        pos = np.searchsorted(self.spatial_id, ids).clip(max=len(self.spatial_id) - 1)
+        return np.where(self.spatial_id[pos] == ids, pos, -1)
+
+
+def build_characterisation(con: duckdb.DuckDBPyConnection) -> Characterisation:
+    start = time.perf_counter()
+    raw = query_characterisation(con)
+    scaled, summary = scale_features(raw.drop(columns="pfa24cd"))
+    pct = percentiles(scaled)
+    bundle = Characterisation(
+        spatial_id=raw.index.to_numpy(),
+        pfa24cd=raw.pfa24cd.to_numpy(),
+        columns=tuple(scaled.columns),
+        scaled=scaled.to_numpy(dtype=np.float32),
+        percentile=pct.to_numpy(dtype=np.float32),
+        imputed_pct={k: float(v) for k, v in summary["median_imputed_%"].items() if v > 0},
+        build_seconds=time.perf_counter() - start,
+        peak_rss_mb=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,  # KiB on Linux
+    )
+    # shared by every session: make accidental in-place edits fail loudly
+    for array in (bundle.spatial_id, bundle.pfa24cd, bundle.scaled, bundle.percentile):
+        array.flags.writeable = False
+    return bundle
+
+
+@st.cache_resource(show_spinner="Building cell characterisation…")
+def characterisation() -> Characterisation:
+    return build_characterisation(get_con())
+
+
+# --- crime counts and lookups ---------------------------------------------------------------------
+
+
+@st.cache_data(ttl="1d")
+def all_months() -> tuple[str, ...]:
+    raw = (
+        get_con()
+        .sql(f"SELECT DISTINCT month FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') ORDER BY 1")
+        .fetchall()
+    )
+    return tuple(m[0] for m in raw)
+
+
+def query_crime_counts(con: duckdb.DuckDBPyConnection, crime_type: CrimeType, months: list[str]) -> pd.DataFrame:
+    """Crimes per E&W cell over `months`, every cell with at least one, ranked nationally.
+
+    One query serves the hotspot list (filter by force, take the top n), the "≥1 crime" candidate
+    pool (its index) and the peers' counts and ranks (look up): each would otherwise be its own scan
+    of the crime table over Azure. Rank order is `n DESC, spatial_id`, the tie-break
+    hex_features.crime_rank uses, so equal counts always rank the same way.
+
+    NI is dropped by the join to geogs (`msoa21cd IS NOT NULL`), not afterwards, because NI cells
+    would otherwise take rank slots from E&W ones.
+    """
+    counts = (
+        con.sql(
+            f"""
+            SELECT crime.spatial_id, ANY_VALUE(ew.pfa24cd) AS pfa24cd, SUM(crime.count)::BIGINT AS n
+            FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') crime
+            JOIN (
+                SELECT spatial_id, pfa24cd
+                FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet')
+                WHERE msoa21cd IS NOT NULL  -- NI has no MSOA codes
+            ) ew ON crime.spatial_id = ew.spatial_id
+            WHERE crime.crime_type = ? AND crime.month IN ?
+            GROUP BY crime.spatial_id
+            HAVING SUM(crime.count) > 0
+            ORDER BY n DESC, crime.spatial_id
+            """,
+            params=(crime_type, months),
+        )
+        .df()
+        .set_index("spatial_id")
+    )
+    counts["national_rank"] = np.arange(1, len(counts) + 1)
+    return counts
+
+
+@st.cache_data(max_entries=64)
+def crime_counts(crime_type: CrimeType, months: tuple[str, ...]) -> pd.DataFrame:
+    return query_crime_counts(get_con(), crime_type, list(months))
+
+
+@st.cache_resource
+def force_codes() -> dict[str, str]:
+    """App force name -> pfa24cd. Every name in `Force` resolves, or this raises."""
+    rows = get_con().sql(f"SELECT pfa24nm, spatial_id FROM read_parquet('{SOURCE}/extract/police_force_areas.parquet')")
+    by_name = dict(rows.fetchall())
+    return {force: by_name[fix_force_name(force)] for force in get_args(Force)}
+
+
+@st.cache_data(max_entries=256)
+def descriptions(ids: tuple[int, ...]) -> pd.Series:
+    """`description` for the cells on screen, indexed by spatial_id: a sentence on the cell's character, road,
+    retail centre and MSOA, e.g. "Urban, on Briggate; in Albion Street & Briggate, Leeds (regional centre). Leeds 111."
+    """
+    return (
+        get_con()
+        .sql(
+            f"""
+            SELECT spatial_id, description
+            FROM read_parquet('{SOURCE}/transform/beahiv202_descriptions.parquet')
+            WHERE spatial_id IN ?
+            """,
+            params=(list(ids),),
+        )
+        .df()
+        .set_index("spatial_id")
+        .description
+    )
+
+
+def cell_outlines(ids) -> list[list[list[float]]]:
+    """Each cell's closed outline as [[lon, lat], ...] in WGS84, ready for a pydeck PolygonLayer.
+
+    Straight from the cell id via beahiv, so no boundary table is read.
+    """
+    ids = np.asarray(ids, dtype=np.int64)
+    if not len(ids):
+        return []
+    xy = shapely.get_coordinates(cell_polygons(ids))  # closed rings: 7 vertices per cell
+    lon, lat = _TO_WGS84.transform(xy[:, 0], xy[:, 1])
+    return np.round(np.column_stack([lon, lat]), COORD_DECIMALS).reshape(len(ids), -1, 2).tolist()

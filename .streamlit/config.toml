@@ -1,0 +1,3 @@
+[theme]
+# Light only: the cell maps are OSM tiles and the radars use fixed colours, both drawn for a light background
+base = "light"
