@@ -6,6 +6,42 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Scale on a hotspot population; outline the force under "Within force"
+
+- **Why** — Radars put every hotspot near the rim on almost every feature, and the user asked how the PDFs differed.
+  `ho_top_kc.py` used the same pipeline but fitted it (and ranked the radar percentiles) over the 4,433 HO hotspot
+  hexes; this app fitted over all 209k cells. Separately: show the force when peers are limited to it.
+- **What**
+  - `data.py`: `HOTSPOT_SHARE`, `query_hotspot_population` (eda's `hotspot_cells` rule on BEAHIV, all 14 types,
+    all months, NI excluded inside: 13,163 cells), `scale_to_population`, `population_percentiles`;
+    `Characterisation.in_population`. `build_characterisation` uses them in place of `scale_features`/`percentiles`.
+  - `main.py`: More info and the radar caption describe the population; `cell_map(scope_force=...)` draws the
+    target's force boundary (unfilled, not pickable) under "Within force".
+  - `cell_map`: every listed hotspot is drawn, peers included (before, a peer that was also a hotspot was drawn only
+    as a peer). Such a peer is drawn in the same blue at lower alpha, so the hotspot shows through, and its tooltip
+    says "peer 3 · hotspot 7". Alpha rather than a new colour, at the user's request. A colour key caption sits under
+    the map once a target is picked. Marker numbers now come from `#`, not the label.
+  - `force_outlines`: simplification tolerance 200m -> 50m (`FORCE_TOLERANCE_M`). 200m is most of a 202m cell,
+    enough to put a border cell on the wrong side of the outline; 20m was tried, 2x the vertices for no visible gain.
+  - `features.py` untouched. Tests: `tests/test_scaling.py` (parity fixture, no Azure), population tests in
+    `test_data.py`. AGENTS.md's scaling rule rewritten.
+- **Design decisions**
+  - **Why it matters for distances, not just radars.** Nationally alcohol, food, hospital and takeaways are 86-90%
+    zero, so `robust_scale` leaves them in log1p units (no IQR). Among the top 4,433 Robbery cells they then made up
+    51% of the mean squared distance; roads + junctions + workers 8%. Over the population no feature exceeds 20%
+    (residents) and those four are ~5% each.
+  - **Fixed population, not the selection's candidates.** Fitting per crime type or window would make distances
+    depend on the selection; one fixed set keeps every property the national fit had.
+  - **Union of per-type cuts**, not one cut on total crime, so cells hot for a low-volume type (robbery, weapons) are
+    represented rather than drowned by violence and ASB.
+  - **features.py not forked.** `robust_scale` only returns the scaled input, so `scale_to_population` repeats its
+    log1p to apply the fit to the rest; `test_scaling.py` pins that it matches `robust_scale` on the population rows
+    and reproduces the national fit when the population is every cell.
+  - **Imputation stays national.** It fills gaps; it doesn't set weights.
+- **Follow-ups**
+  - Top hotspots still sit at the 90th-98th population percentile on the outlet features; that's now a real
+    statement ("busier than most hotspots"), not a saturation artefact.
+
 ## Grey out forces with no data
 
 - **Why** — GMP publishes nothing to police.uk, so its area looked crime-free on the map; other forces miss months.

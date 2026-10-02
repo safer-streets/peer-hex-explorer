@@ -21,6 +21,7 @@ from peer_hex_explorer.data import (
     query_characterisation,
     query_coverage,
     query_crime_counts,
+    query_hotspot_population,
 )
 from peer_hex_explorer.database import SOURCE, duckdb_connector
 from peer_hex_explorer.utils import Force
@@ -93,6 +94,7 @@ def test_bundle(con):
     assert bundle.rows_of(bundle.spatial_id[[0, 5, n - 1]]).tolist() == [0, 5, n - 1]
     assert bundle.rows_of([1]).tolist() == [-1]
     assert sum(p is None for p in bundle.pfa24cd) <= 1
+    assert 10_000 < bundle.in_population.sum() < 20_000
 
 
 def test_hotspot_ids_decode(con):
@@ -109,3 +111,10 @@ def test_coverage_resolves_every_force(con):
     gaps = coverage_gaps(coverage, months)
     assert gaps["Greater Manchester"] == list(months)  # GMP hasn't published to police.uk since 2019
     assert "West Yorkshire" not in gaps
+
+
+def test_hotspot_population(con, raw):
+    population = query_hotspot_population(con.cursor())
+    assert np.all(np.diff(population) > 0)
+    assert 10_000 < len(population) < 20_000  # 13,163 when written
+    assert np.isin(population, raw.index.to_numpy()).mean() > 0.99

@@ -44,6 +44,7 @@ REFERENCE_OUTLINE = "#6e2116"
 REFERENCE_TINT = "#d19a90"  # the reference drawn as a backdrop: a tint of REFERENCE_COLOUR, so it reads as it
 HOTSPOT_COLOUR = "#f76707"  # strong orange: reads on the light basemap, and apart from the target red and peer blue
 HOTSPOT_OUTLINE = "#7a2e00"
+FORCE_OUTLINE = "#333333"  # the "within force" boundary: dark and unfilled, so it frames without hiding anything
 NO_DATA_COLOUR = "#6b6b6b"  # forces without police.uk data: neutral, so it reads as absence rather than a category
 
 N_TOP_CONTRIBUTIONS = 3
@@ -133,15 +134,22 @@ the force the selected hotspot lies in.
 **How "near" is measured.** Each cell is described by {len(bundle.columns)} features (road length, junctions, school
 catchment depth, food/alcohol/takeaway outlets, hospitals, transit stops, residents, workers, distance to a retail
 centre, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
-median-centred and IQR-scaled **once, over all {len(bundle.spatial_id):,} cells in England & Wales**. Distance is
-Euclidean over the selected features. Scaling is per feature, so switching a feature off leaves every other feature's
-scaling, and so the distances, unchanged; and it doesn't depend on the crime type.
+median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
+cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
+then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Distance is Euclidean over the selected
+features. Scaling is per feature, so switching a feature off leaves every other feature's scaling, and so the
+distances, unchanged; and it doesn't depend on the crime type or window.
+
+Why hotspots and not every cell: most cells are rural or suburban, and 86-90% have no food, alcohol, takeaway or
+hospital at all. Fitted over every cell, those four have no spread to scale by, stay in raw log units, and end up
+carrying half the distance between two urban cells. Fitted over hotspots, every feature's spread is set by places like
+the ones being compared, so the weight is shared out much more evenly.
 
 **Peer table.** "Differs most on" is each feature's share of that peer's squared distance to the target: the features
 where the match is weakest.
 
-**Radars.** Each spoke is the cell's national percentile on that feature, from −100 (lowest) through 0 (median, dotted)
-to +100 (highest). The target is the tinted shape behind every panel.
+**Radars.** Each spoke is the cell's percentile on that feature *among the hotspot population*, from −100 (lowest)
+through 0 (the typical hotspot, dotted) to +100 (highest). The target is the tinted shape behind every panel.
 
 **Caveats.**
 - Median-imputed values: {imputed}. These cells read as typical on that feature, whatever they really are; retail
@@ -206,10 +214,12 @@ def cell_map(
     gaps: dict[str, list[str]],
     window: tuple[str, ...],
     category: CrimeType,
+    scope_force: str | None = None,
 ) -> None:
     """Hotspots strong until a target is picked, then faint; the target in the reference colour, peers numbered. Frames
     the target and its peers when there are any, otherwise the hotspots. Forces with months of `window` without
-    `category` (`gaps`: force name -> those months) are greyed out underneath: darker if it's the whole window."""
+    `category` (`gaps`: force name -> those months) are greyed out underneath: darker if it's the whole window.
+    `scope_force` (pfa24cd) is outlined when peers are limited to that force."""
 
     def records(cells: pd.DataFrame, labels: list[str], details: list[str]) -> list[dict]:
         # Markup goes in the tooltip template, not here: field values are HTML-escaped when substituted, so tags in
@@ -230,10 +240,8 @@ def cell_map(
     def hotspot_records(cells: pd.DataFrame, prefix: str = "") -> list[dict]:
         return records(cells, [f"{prefix}hotspot {r}" for r in cells["rank"]], [f"{n:,} crimes" for n in cells["n"]])
 
-    others = hotspots.drop(index=[target] if target is not None else [])
-    if peers is not None:
-        others = others.drop(index=peers.index, errors="ignore")
-    background = hotspot_records(others)
+    # peers stay in: a peer that is also a hotspot shows the hotspot through its (lighter) peer colour
+    background = hotspot_records(hotspots.drop(index=[target] if target is not None else []))
 
     # Every set of cells gets a polygon layer plus a fixed-size marker at its centre: at the national zoom a cell is a
     # pixel or two across, so without the marker it would vanish until zoomed right in. The marker carries the
@@ -280,6 +288,18 @@ def cell_map(
         polygons(no_data, NO_DATA_COLOUR, NO_DATA_COLOUR, 0.45, 1),
         polygons(part_data, NO_DATA_COLOUR, NO_DATA_COLOUR, 0.15, 1),
     ]
+    if scope_force is not None:
+        # not pickable: the stroke would otherwise take the tooltip from cells lying on the boundary
+        force_layers.append(
+            pdk.Layer(
+                "PolygonLayer",
+                [{"polygon": polygon} for polygon in outlines.get(scope_force, [])],
+                get_polygon="polygon",
+                filled=False,
+                get_line_color=_rgba(FORCE_OUTLINE, 0.9),
+                line_width_min_pixels=2,
+            )
+        )
 
     if target is None or peers is None:
         # nothing selected (or nothing to compare): the hotspots are the subject, so draw them strongly
@@ -291,24 +311,33 @@ def cell_map(
         focus = background
     else:
         # a target is selected: the other hotspots drop back to context, the target and its peers take the contrast
+        # a peer that is also a listed hotspot is drawn lighter, so the hotspot under it shows, and its label says so
+        hotspot_rank = hotspots["rank"].reindex(peers.index)
         peer_records = records(
             peers,
-            [f"peer {i}" for i in peers["#"]],
+            [
+                f"peer {i}" + (f" · hotspot {r:.0f}" if pd.notna(r) else "")
+                for i, r in zip(peers["#"], hotspot_rank, strict=True)
+            ],
             [f"distance {d:.2f} · {n:,} crimes" for d, n in zip(peers["distance"], peers["crimes"], strict=True)],
         )
+        peer_only = [r for r, rank in zip(peer_records, hotspot_rank, strict=True) if pd.isna(rank)]
+        peer_hot = [r for r, rank in zip(peer_records, hotspot_rank, strict=True) if pd.notna(rank)]
         target_records = hotspot_records(hotspots.loc[[target]], prefix="target: ")
         layers = [
             *force_layers,
             polygons(background, HOTSPOT_COLOUR, HOTSPOT_COLOUR, 0.12, 1),
             markers(background, HOTSPOT_COLOUR, HOTSPOT_COLOUR, 3, alpha=0.5),
-            polygons(peer_records, CELL_COLOUR, CELL_OUTLINE, 0.3, 2),
+            polygons(peer_only, CELL_COLOUR, CELL_OUTLINE, 0.3, 2),
+            polygons(peer_hot, CELL_COLOUR, CELL_OUTLINE, 0.15, 2),
             polygons(target_records, REFERENCE_COLOUR, REFERENCE_OUTLINE, 0.35, 3),
-            markers(peer_records, CELL_COLOUR, CELL_OUTLINE, 10),
+            markers(peer_only, CELL_COLOUR, CELL_OUTLINE, 10),
+            markers(peer_hot, CELL_COLOUR, CELL_OUTLINE, 10, alpha=0.55),
             markers(target_records, REFERENCE_COLOUR, REFERENCE_OUTLINE, 11),
             # peer numbers sit on their markers, so they read against the marker rather than the basemap
             pdk.Layer(
                 "TextLayer",
-                [{**r, "text": r["label"].removeprefix("peer ")} for r in peer_records],
+                [{**r, "text": str(i)} for r, i in zip(peer_records, peers["#"], strict=True)],
                 get_position="centre",
                 get_text="text",
                 get_size=12,
@@ -331,6 +360,9 @@ def cell_map(
         ),
         height=520,
     )
+    if target is not None and peers is not None:
+        # streamlit's named colours, the nearest to the map's
+        st.caption(":red[■] target · :blue[■] peer (lighter where it is also a listed hotspot) · :orange[■] hotspot")
     if notes:
         st.caption(
             "Greyed out (no data on police.uk): "
@@ -532,7 +564,10 @@ def main() -> None:
         peers["description"] = described.reindex(peers.index).fillna("").to_numpy()
 
     gaps = coverage_gaps(coverage(category, window), window)
-    cell_map(hotspots, target if peers is not None else None, peers, gaps, window, category)
+    scope_force = None
+    if scope == WITHIN_FORCE and peers is not None:
+        scope_force = bundle.pfa24cd[bundle.rows_of([target])[0]]
+    cell_map(hotspots, target if peers is not None else None, peers, gaps, window, category, scope_force)
     hotspot_table(hotspots, table_key)
 
     if message is not None:
@@ -553,7 +588,7 @@ def main() -> None:
 
     st.markdown("#### Cells and profiles")
     st.caption(
-        "Radars show features as national percentiles (centre = lowest, dotted = median, rim = highest). "
+        "Radars show features as percentiles among hotspot cells (centre = lowest, dotted = median, rim = highest). "
         "The target is the tinted shape behind each peer's radar."
     )
     panels = pd.DataFrame(
