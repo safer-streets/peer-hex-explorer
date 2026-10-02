@@ -6,6 +6,21 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## CI
+
+- **Why** — There was none; the gates only ran in pre-commit.
+- **What**
+  - `.github/workflows/lint-test.yml`: on push to `main` and on PRs, `uv sync --locked`, then `ruff check`,
+    `ruff format --check`, `ty check`, `pytest -rs`. Ubuntu, Python 3.14; action versions as in beahiv's workflow.
+  - `tests/test_app.py`: hands the connection string to `AppTest` via `at.secrets`, since the app reads `st.secrets`
+    and CI has only the `AZURE_STORAGE_CONNSTR` env var, no `secrets.toml`.
+- **Design decisions**
+  - **Azure tests run in CI only if the `AZURE_STORAGE_CONNSTR` repo secret is set**, and never for PRs from forks.
+    Without it they skip; `-rs` lists the skips in the log so a green run without them is visible as such.
+  - Checked locally: with no `secrets.toml` and no env var, 17 pass and 10 skip; with only the env var, 27 pass.
+- **Follow-ups**
+  - Someone with admin rights must add the `AZURE_STORAGE_CONNSTR` secret.
+
 ## Scale on a hotspot population; outline the force under "Within force"
 
 - **Why** — Radars put every hotspot near the rim on almost every feature, and the user asked how the PDFs differed.
