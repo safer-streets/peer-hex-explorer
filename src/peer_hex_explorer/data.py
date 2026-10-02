@@ -285,6 +285,66 @@ def force_codes() -> dict[str, str]:
     return {force: by_name[fix_force_name(force)] for force in get_args(Force)}
 
 
+# police.uk's force names, once the suffix is stripped, are the app's (`Force`) except for these
+_POLICE_UK_NAMES = {"Devon & Cornwall": "Devon and Cornwall", "Dyfed-Powys": "Dyfed Powys"}
+
+
+def app_force_name(police_uk_name: str) -> str:
+    """e.g. "Metropolitan Police Service" -> "Metropolitan", "Dyfed-Powys Police" -> "Dyfed Powys"."""
+    for suffix in (" Police Service", " Constabulary", " Police"):
+        police_uk_name = police_uk_name.removesuffix(suffix)
+    return _POLICE_UK_NAMES.get(police_uk_name, police_uk_name)
+
+
+def query_coverage(con: duckdb.DuckDBPyConnection, crime_type: CrimeType, months: list[str]) -> pd.Series:
+    """police.uk's own count of `crime_type` per force and month, indexed by (app force name, month). Forces outside
+    `Force` (British Transport Police, PSNI) are dropped."""
+    coverage = con.sql(
+        f"""
+        SELECT force, month, n_crimes
+        FROM read_parquet('{SOURCE}/extract/crime_coverage.parquet')
+        WHERE crime_type = ? AND month IN ?
+        """,
+        params=(crime_type, months),
+    ).df()
+    coverage["force"] = coverage["force"].map(app_force_name)
+    coverage = coverage[coverage["force"].isin(get_args(Force))]
+    return coverage.set_index(["force", "month"])["n_crimes"]
+
+
+@st.cache_data(max_entries=64)
+def coverage(crime_type: CrimeType, months: tuple[str, ...]) -> pd.Series:
+    return query_coverage(get_con(), crime_type, list(months))
+
+
+def coverage_gaps(coverage: pd.Series, months: tuple[str, ...]) -> dict[str, list[str]]:
+    """App force name -> the months in `months` it recorded none of the crime type in, for forces with any such month.
+    A missing row counts as none."""
+    n = coverage.to_dict()
+    gaps = {force: [m for m in months if n.get((force, m), 0) <= 0] for force in get_args(Force)}
+    return {force: missing for force, missing in gaps.items() if missing}
+
+
+@st.cache_resource
+def force_outlines() -> dict[str, list[list[list[list[float]]]]]:
+    """pfa24cd -> the force area as pydeck polygons, each [exterior, *holes] with rings of [lon, lat]. Simplified to
+    ~200m, which is invisible at the zoom a whole force is seen at and cuts the vertex count ~100-fold."""
+    rows = get_con().sql(
+        f"""
+        SELECT spatial_id, ST_AsWKB(ST_SimplifyPreserveTopology(geom, 200))
+        FROM read_parquet('{SOURCE}/extract/police_force_areas.parquet')
+        """
+    )
+
+    def rings(polygon: shapely.Polygon) -> list[list[list[float]]]:
+        return [
+            np.round(np.column_stack(_TO_WGS84.transform(*np.asarray(ring.coords).T[:2])), COORD_DECIMALS).tolist()
+            for ring in (polygon.exterior, *polygon.interiors)
+        ]
+
+    return {code: [rings(p) for p in shapely.get_parts(shapely.from_wkb(bytes(wkb)))] for code, wkb in rows.fetchall()}
+
+
 @st.cache_data(max_entries=256)
 def descriptions(ids: tuple[int, ...]) -> pd.Series:
     """`description` for the cells on screen, indexed by spatial_id: a sentence on the cell's character, road,

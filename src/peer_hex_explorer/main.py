@@ -21,9 +21,12 @@ from peer_hex_explorer.data import (
     all_months,
     cell_outlines,
     characterisation,
+    coverage,
+    coverage_gaps,
     crime_counts,
     descriptions,
     force_codes,
+    force_outlines,
 )
 from peer_hex_explorer.features import SHORT_LABELS
 from peer_hex_explorer.peers import contributions, nearest
@@ -41,6 +44,7 @@ REFERENCE_OUTLINE = "#6e2116"
 REFERENCE_TINT = "#d19a90"  # the reference drawn as a backdrop: a tint of REFERENCE_COLOUR, so it reads as it
 HOTSPOT_COLOUR = "#f76707"  # strong orange: reads on the light basemap, and apart from the target red and peer blue
 HOTSPOT_OUTLINE = "#7a2e00"
+NO_DATA_COLOUR = "#6b6b6b"  # forces without police.uk data: neutral, so it reads as absence rather than a category
 
 N_TOP_CONTRIBUTIONS = 3
 
@@ -144,6 +148,11 @@ to +100 (highest). The target is the tinted shape behind every panel.
   distance is off by default for this reason.
 - Northern Ireland is excluded throughout: police.uk publishes its crime, but it has no matching geography or features.
 - Each cell belongs to one force (by greatest overlap), which is what "within force" uses.
+- Some forces publish nothing to police.uk (Greater Manchester, since 2019), and others miss months. The map greys
+  out a force that recorded none of the selected crime type in any month of the window, and shades one with only some
+  such months more lightly (police.uk's own per-force counts); their cells are under-counted and rarely appear as
+  hotspots or peers. Border cells of a greyed-out force can still show crimes: those are a neighbour's, located
+  across the boundary.
 """
     )
     st.caption(
@@ -190,9 +199,17 @@ def peer_table(peers: pd.DataFrame) -> None:
     )
 
 
-def cell_map(hotspots: pd.DataFrame, target: int | None, peers: pd.DataFrame | None) -> None:
+def cell_map(
+    hotspots: pd.DataFrame,
+    target: int | None,
+    peers: pd.DataFrame | None,
+    gaps: dict[str, list[str]],
+    window: tuple[str, ...],
+    category: CrimeType,
+) -> None:
     """Hotspots strong until a target is picked, then faint; the target in the reference colour, peers numbered. Frames
-    the target and its peers when there are any, otherwise the hotspots."""
+    the target and its peers when there are any, otherwise the hotspots. Forces with months of `window` without
+    `category` (`gaps`: force name -> those months) are greyed out underneath: darker if it's the whole window."""
 
     def records(cells: pd.DataFrame, labels: list[str], details: list[str]) -> list[dict]:
         # Markup goes in the tooltip template, not here: field values are HTML-escaped when substituted, so tags in
@@ -246,9 +263,28 @@ def cell_map(hotspots: pd.DataFrame, target: int | None, peers: pd.DataFrame | N
             pickable=True,
         )
 
+    outlines, codes = force_outlines(), force_codes()
+    no_data: list[dict] = []
+    part_data: list[dict] = []
+    notes = {}
+    for force, missing in gaps.items():
+        whole = len(missing) == len(window)
+        notes[force] = note = (
+            f"no {category.lower()} recorded in the window" if whole else f"none recorded in {', '.join(missing)}"
+        )
+        (no_data if whole else part_data).extend(
+            {"polygon": polygon, "label": force, "description": note, "detail": ""}
+            for polygon in outlines.get(codes[force], [])
+        )
+    force_layers = [
+        polygons(no_data, NO_DATA_COLOUR, NO_DATA_COLOUR, 0.45, 1),
+        polygons(part_data, NO_DATA_COLOUR, NO_DATA_COLOUR, 0.15, 1),
+    ]
+
     if target is None or peers is None:
         # nothing selected (or nothing to compare): the hotspots are the subject, so draw them strongly
         layers = [
+            *force_layers,
             polygons(background, HOTSPOT_COLOUR, HOTSPOT_OUTLINE, 0.35, 2),
             markers(background, HOTSPOT_COLOUR, HOTSPOT_OUTLINE, 6),
         ]
@@ -262,6 +298,7 @@ def cell_map(hotspots: pd.DataFrame, target: int | None, peers: pd.DataFrame | N
         )
         target_records = hotspot_records(hotspots.loc[[target]], prefix="target: ")
         layers = [
+            *force_layers,
             polygons(background, HOTSPOT_COLOUR, HOTSPOT_COLOUR, 0.12, 1),
             markers(background, HOTSPOT_COLOUR, HOTSPOT_COLOUR, 3, alpha=0.5),
             polygons(peer_records, CELL_COLOUR, CELL_OUTLINE, 0.3, 2),
@@ -294,6 +331,12 @@ def cell_map(hotspots: pd.DataFrame, target: int | None, peers: pd.DataFrame | N
         ),
         height=520,
     )
+    if notes:
+        st.caption(
+            "Greyed out (no data on police.uk): "
+            + " · ".join(f"{force}, {note}" for force, note in notes.items())
+            + ". Their crimes are under-counted, so their cells rarely appear as hotspots or peers."
+        )
 
 
 def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_reference: bool) -> go.Figure:
@@ -488,7 +531,8 @@ def main() -> None:
     if peers is not None:
         peers["description"] = described.reindex(peers.index).fillna("").to_numpy()
 
-    cell_map(hotspots, target if peers is not None else None, peers)
+    gaps = coverage_gaps(coverage(category, window), window)
+    cell_map(hotspots, target if peers is not None else None, peers, gaps, window, category)
     hotspot_table(hotspots, table_key)
 
     if message is not None:

@@ -128,6 +128,7 @@ src/peer_hex_explorer/
   assets/                   # logo
 tests/
   test_peers.py             # pure numpy, always runs
+  test_coverage.py          # force coverage gaps, always runs
   test_features.py          # parity with eda's hex_features, always runs
   test_data.py  test_app.py # Azure; skipped without credentials
   fixtures/                 # parity fixture (input sample + hex_features output)

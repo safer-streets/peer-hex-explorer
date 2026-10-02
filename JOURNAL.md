@@ -6,6 +6,28 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Grey out forces with no data
+
+- **Why** — GMP publishes nothing to police.uk, so its area looked crime-free on the map; other forces miss months.
+- **What**
+  - `data.py`: `query_coverage`/`coverage` read `extract/crime_coverage.parquet` (police.uk's per-force, per-month,
+    per-crime-type counts) for the selected crime type and window; `coverage_gaps` gives force -> months with zero
+    (or no row); `app_force_name` maps police.uk names ("Metropolitan Police Service") to `Force`;
+    `force_outlines` reads `extract/police_force_areas.parquet`, simplified to 200m, as pydeck polygons.
+  - `main.py`: `cell_map` draws a grey layer under everything: solid for forces with none of the crime type in any
+    month of the window, light for some months; tooltip and a caption name them. More info caveat added.
+  - Tests: `tests/test_coverage.py` (pure), `test_coverage_resolves_every_force` in `test_data.py`.
+- **Design decisions**
+  - **Coverage table, not our own counts.** GMP's border cells still get ~50 crimes/month in
+    `beahiv202_crime_counts` (neighbours' crimes located across the boundary), so "zero in our counts" misses it.
+    police.uk's per-force count is exactly zero.
+  - **Per crime type, every month must be > 0.** As requested. So a genuine zero in a small force can grey it
+    lightly (City of London, Possession of weapons, 2025-08).
+  - **Force code via name, not the boundary table's join.** The coverage table has names only; `force_codes`
+    already resolves app names to `pfa24cd`.
+- **Follow-ups**
+  - Only greys the map: hotspots and peers in gap forces are still listed, unflagged.
+
 ## Initial build
 
 - **Why** — Make `ho_top_kc.py`'s hotspot → nearest-cells PDFs interactive, on the BEAHIV 202m grid with public

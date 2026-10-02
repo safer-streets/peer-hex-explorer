@@ -8,14 +8,22 @@ BEAHIV_CHARACTERISATION_PARQUET.
 import os
 import tomllib
 from pathlib import Path
+from typing import get_args
 
 import beahiv
 import numpy as np
 import pandas as pd
 import pytest
 
-from peer_hex_explorer.data import build_characterisation, query_characterisation, query_crime_counts
+from peer_hex_explorer.data import (
+    build_characterisation,
+    coverage_gaps,
+    query_characterisation,
+    query_coverage,
+    query_crime_counts,
+)
 from peer_hex_explorer.database import SOURCE, duckdb_connector
+from peer_hex_explorer.utils import Force
 
 ROOT = Path(__file__).parents[1]
 REFERENCE = Path(
@@ -92,3 +100,12 @@ def test_hotspot_ids_decode(con):
     assert len(counts) > 0
     assert counts.national_rank.tolist() == list(range(1, len(counts) + 1))
     assert {beahiv.decode(int(i)).side_length for i in counts.index} == {202}
+
+
+def test_coverage_resolves_every_force(con):
+    months = ("2026-05", "2026-06", "2026-07")
+    coverage = query_coverage(con.cursor(), "Robbery", list(months))
+    assert set(coverage.index.get_level_values("force")) == set(get_args(Force))
+    gaps = coverage_gaps(coverage, months)
+    assert gaps["Greater Manchester"] == list(months)  # GMP hasn't published to police.uk since 2019
+    assert "West Yorkshire" not in gaps
