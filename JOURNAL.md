@@ -21,6 +21,8 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
     as a peer). Such a peer is drawn in the same blue at lower alpha, so the hotspot shows through, and its tooltip
     says "peer 3 · hotspot 7". Alpha rather than a new colour, at the user's request. A colour key caption sits under
     the map once a target is picked. Marker numbers now come from `#`, not the label.
+  - Radars show plain 0-100 percentiles (median ring at 50), not eda's -100..+100: "percentile −100" read as
+    nonsense. `population_percentiles` returns 0-100; `features.percentiles` is left as the parity copy.
   - `force_outlines`: simplification tolerance 200m -> 50m (`FORCE_TOLERANCE_M`). 200m is most of a 202m cell,
     enough to put a border cell on the wrong side of the outline; 20m was tried, 2x the vertices for no visible gain.
   - `features.py` untouched. Tests: `tests/test_scaling.py` (parity fixture, no Azure), population tests in

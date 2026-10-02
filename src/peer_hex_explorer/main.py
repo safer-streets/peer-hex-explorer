@@ -148,8 +148,10 @@ the ones being compared, so the weight is shared out much more evenly.
 **Peer table.** "Differs most on" is each feature's share of that peer's squared distance to the target: the features
 where the match is weakest.
 
-**Radars.** Each spoke is the cell's percentile on that feature *among the hotspot population*, from −100 (lowest)
-through 0 (the typical hotspot, dotted) to +100 (highest). The target is the tinted shape behind every panel.
+**Radars.** Each spoke is the cell's percentile on that feature *among the hotspot population*: 0 at the centre
+(lower than every hotspot), 50 on the dotted ring (the typical hotspot), 100 at the rim (higher than every hotspot). A
+cell outside the population is placed where it would rank among it. The target is the tinted shape behind every
+panel.
 
 **Caveats.**
 - Median-imputed values: {imputed}. These cells read as typical on that feature, whatever they really are; retail
@@ -373,7 +375,8 @@ def cell_map(
 
 def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_reference: bool) -> go.Figure:
     """One panel, after hex_features.radar_panels(radial="percentile"): fixed spoke order (the shape *is* the
-    identity, so a reordered axis would be a different chart), the reference tinted behind, 0 dotted."""
+    identity, so a reordered axis would be a different chart), the reference tinted behind, the median dotted. Plain
+    0-100 percentiles rather than eda's -100..+100."""
 
     def closed(a):
         return [*a, a[0]]
@@ -383,7 +386,7 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
     fig = go.Figure()
     fig.add_trace(
         go.Scatterpolar(
-            r=[0] * len(theta),
+            r=[50] * len(theta),
             theta=theta,
             mode="lines",
             line={"color": "#888888", "width": 1, "dash": "dot"},
@@ -399,7 +402,7 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
                 fillcolor=_css_rgba(REFERENCE_TINT, 0.3),
                 line={"color": REFERENCE_TINT, "width": 1.2},
                 name="target",
-                hovertemplate="%{theta}: %{r:.0f}",
+                hovertemplate="%{theta}: percentile %{r:.0f}",
             )
         )
     fig.add_trace(
@@ -410,7 +413,7 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
             fillcolor=_css_rgba(colour, 0.18),
             line={"color": colour, "width": 2},
             name="this cell",
-            hovertemplate="%{theta}: %{r:.0f}",
+            hovertemplate="%{theta}: percentile %{r:.0f}",
         )
     )
     fig.update_layout(
@@ -419,7 +422,7 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
         margin={"l": 80, "r": 80, "t": 40, "b": 40},
         polar={
             # no tick labels: they sit on a spoke and collide with its label; the caption gives the scale
-            "radialaxis": {"range": [-100, 100], "tickvals": [-100, 0, 100], "showticklabels": False},
+            "radialaxis": {"range": [0, 100], "tickvals": [0, 50, 100], "showticklabels": False},
             "angularaxis": {"tickfont": {"size": 12}},
         },
     )
@@ -588,7 +591,7 @@ def main() -> None:
 
     st.markdown("#### Cells and profiles")
     st.caption(
-        "Radars show features as percentiles among hotspot cells (centre = lowest, dotted = median, rim = highest). "
+        "Radars show each feature's percentile among hotspot cells: centre 0, dotted ring 50 (median), rim 100. "
         "The target is the tinted shape behind each peer's radar."
     )
     panels = pd.DataFrame(

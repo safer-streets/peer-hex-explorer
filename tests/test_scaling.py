@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from peer_hex_explorer.data import population_percentiles, scale_to_population
-from peer_hex_explorer.features import clean_features, ilr_features, percentiles, robust_scale, scale_features
+from peer_hex_explorer.features import clean_features, ilr_features, robust_scale, scale_features
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -41,6 +41,6 @@ def test_population_percentiles(raw, in_population):
     scaled, _ = scale_to_population(raw, in_population)
     pct = population_percentiles(scaled, in_population)
     # on the population itself, rank(pct=True) less its half-rank offset
-    expected = percentiles(scaled[in_population]) - 100 / in_population.sum()
+    expected = scaled[in_population].rank(pct=True) * 100 - 50 / in_population.sum()
     np.testing.assert_allclose(pct[in_population].to_numpy(), expected.to_numpy(), atol=1e-9)
-    assert pct.to_numpy().min() >= -100 and pct.to_numpy().max() <= 100
+    assert pct.to_numpy().min() >= 0 and pct.to_numpy().max() <= 100

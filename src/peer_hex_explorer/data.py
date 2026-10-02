@@ -214,9 +214,11 @@ def scale_to_population(raw: pd.DataFrame, in_population: np.ndarray) -> tuple[p
 
 
 def population_percentiles(scaled: pd.DataFrame, in_population: np.ndarray) -> pd.DataFrame:
-    """Each cell's percentile on each feature *within the population*, -100..+100: features.percentiles' transform
-    with the population as the reference, so a cell outside it still gets the position it would have among it. Ties
-    take the midpoint, as rank(pct=True) does."""
+    """Each cell's percentile (0-100) on each feature *within the population*, so a cell outside it still gets the
+    position it would have among it. Ties take the midpoint, as rank(pct=True) does.
+
+    Plain 0-100, not the -100..+100 of features.percentiles (eda's radar convention, median at 0): on a chart labelled
+    "percentile" a negative value reads as nonsense."""
     values = scaled.to_numpy()
     reference = np.sort(values[in_population], axis=0)
     pct = np.empty_like(values)
@@ -224,7 +226,7 @@ def population_percentiles(scaled: pd.DataFrame, in_population: np.ndarray) -> p
         below = np.searchsorted(reference[:, j], values[:, j], side="left")
         at_or_below = np.searchsorted(reference[:, j], values[:, j], side="right")
         pct[:, j] = (below + at_or_below) / (2 * len(reference))
-    return pd.DataFrame((pct - 0.5) * 200, index=scaled.index, columns=scaled.columns)
+    return pd.DataFrame(pct * 100, index=scaled.index, columns=scaled.columns)
 
 
 def query_characterisation(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
@@ -255,7 +257,7 @@ class Characterisation:
     in_population: np.ndarray  # bool (n,): the hotspot cells the scaling and percentiles are fitted over
     columns: tuple[str, ...]
     scaled: np.ndarray  # float32 (n, p): robust-scaled on the population, what distances are measured in
-    percentile: np.ndarray  # float32 (n, p): percentile within the population per column, -100..+100, for the radars
+    percentile: np.ndarray  # float32 (n, p): percentile within the population per column, 0..100, for the radars
     imputed_pct: dict[str, float]  # share of each raw column that was median-filled
     build_seconds: float
     peak_rss_mb: float
