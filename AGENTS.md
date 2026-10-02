@@ -71,9 +71,12 @@ network, so a one-off failure there is worth a rerun before debugging.
   made in eda's `hex_features.py` first and copied over, or be a deliberate fork recorded in the journal. When eda's
   pipeline changes on purpose, regenerate the fixture in eda's environment (recipe in `test_features.py`'s
   docstring); `test_features.py` failing is how drift shows up.
-- **Scaling is fitted once, nationally, column by column.** That is what keeps distances unchanged when a feature is
-  switched off, and independent of the crime type. Anything that refits scaling per selection (per crime type, per
-  force, per feature set) breaks that property and needs a journal entry saying why.
+- **Scaling is fitted once, on a fixed hotspot population, column by column, and applied to every cell.** The
+  population (`data.query_hotspot_population`) is the union over crime types of the fewest cells accounting for 25%
+  of that type's crime, all months: eda's `hotspot_cells` rule. The radar percentiles are ranked over the same
+  population. Being fixed and per-column is what keeps distances unchanged when a feature is switched off, and
+  independent of the crime type and window. Anything that refits scaling per selection (per crime type, per force, per
+  feature set) breaks that property and needs a journal entry saying why. Imputation (`clean_features`) stays national.
 - **Northern Ireland is excluded before scaling and before ranking.** The BEAHIV tables include NI cells with every
   geography column NULL; both the characterisation query and the crime-count query filter `msoa21cd IS NOT NULL`
   *inside* the query. Filtering afterwards would leave NI in the medians, percentiles and rank slots.
@@ -92,7 +95,8 @@ network, so a one-off failure there is worth a rerun before debugging.
 1. **Secrets** — nothing in the diff, the tests or the journal contains or prints a credential.
 2. **Data access** — new reads go through `get_con()` and DuckDB, with parameters for anything user-chosen.
 3. **Pipeline drift** — `features.py` unchanged, or changed in step with eda and the fixture regenerated.
-4. **Scaling and ranking populations** — still national, still NI-free, still ranked `n DESC, spatial_id`.
+4. **Scaling and ranking populations** — scaling still fitted on the fixed hotspot population, everything still
+   NI-free, still ranked `n DESC, spatial_id`.
 5. **Caching** — expensive loaders are cached with a `max_entries`/`ttl` bound; cheap filtering stays outside.
 6. **UI state** — the hotspot selection lives in the table's widget state, keyed on crime type, lookback and number
    of hotspots; changing features, k or scope must keep it.
@@ -128,6 +132,8 @@ src/peer_hex_explorer/
   assets/                   # logo
 tests/
   test_peers.py             # pure numpy, always runs
+  test_coverage.py          # force coverage gaps, always runs
+  test_scaling.py           # the hotspot-population fit, always runs
   test_features.py          # parity with eda's hex_features, always runs
   test_data.py  test_app.py # Azure; skipped without credentials
   fixtures/                 # parity fixture (input sample + hex_features output)

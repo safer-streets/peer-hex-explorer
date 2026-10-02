@@ -24,6 +24,8 @@ def select(at: AppTest, row: int) -> AppTest:
 @pytest.fixture
 def at() -> AppTest:
     at = AppTest.from_file(APP, default_timeout=300)
+    # handed over explicitly so AZURE_STORAGE_CONNSTR alone (as in CI, with no secrets.toml) is enough
+    at.secrets["azure_storage_connstr"] = _connstr()
     at.run()
     assert not at.exception
     return at

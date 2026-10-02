@@ -23,7 +23,7 @@ from duckdb.sqltypes import BIGINT, INTEGER
 from pyproj import Transformer
 
 from peer_hex_explorer.database import SOURCE, duckdb_connector
-from peer_hex_explorer.features import percentiles, scale_features
+from peer_hex_explorer.features import LOG1P_COLUMNS, clean_features, ilr_features, robust_scale
 from peer_hex_explorer.utils import CrimeType, Force, fix_force_name
 
 # deck.gl gets the geometry as JSON over the websocket on every rerun, so trim it at source. 1e-6
@@ -158,6 +158,76 @@ ORDER BY hex.spatial_id
 
 CONTEXT_COLUMNS = ["spatial_id", "pfa24cd"]
 
+# A cell is in the reference population if it is among the fewest cells accounting for this share of any one crime
+# type's crime, over every month: safer-streets-eda's hex_features.hotspot_cells rule, on this grid and all types.
+HOTSPOT_SHARE = 0.25
+
+
+def query_hotspot_population(con: duckdb.DuckDBPyConnection) -> np.ndarray:
+    """The spatial_ids, ascending, the scaling and the radar percentiles are fitted over.
+
+    NI is excluded inside the counts, as in hotspot_cells: it would otherwise be in each type's 25% denominator and
+    take slots in its ranking. `spatial_id` breaks count ties so the cut lands the same way every time.
+    """
+    rows = con.execute(
+        f"""
+        WITH counts AS (
+            SELECT crime.crime_type, crime.spatial_id, SUM(crime.count) AS n
+            FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') crime
+            SEMI JOIN (
+                SELECT spatial_id
+                FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet')
+                WHERE msoa21cd IS NOT NULL  -- NI has no MSOA codes
+            ) ew ON crime.spatial_id = ew.spatial_id
+            WHERE crime.crime_type IN ?
+            GROUP BY crime.crime_type, crime.spatial_id
+        ),
+        ranked AS (
+            SELECT spatial_id, SUM(n) OVER running / SUM(n) OVER (PARTITION BY crime_type) AS cum_share
+            FROM counts
+            WINDOW running AS (
+                PARTITION BY crime_type ORDER BY n DESC, spatial_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        )
+        SELECT DISTINCT spatial_id FROM ranked WHERE cum_share <= ? ORDER BY spatial_id
+        """,
+        (list(get_args(CrimeType)), HOTSPOT_SHARE),
+    ).fetchnumpy()["spatial_id"]
+    return np.asarray(rows, dtype=np.int64)
+
+
+def scale_to_population(raw: pd.DataFrame, in_population: np.ndarray) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """features.scale_features, except that the median and IQR are fitted on the `in_population` rows and then applied
+    to every row. Cleaning (median imputation) stays national: it fills gaps, it doesn't set feature weights.
+
+    robust_scale only returns the scaled population, so its log1p step is repeated here to apply the same fit to the
+    rest; test_data checks the population rows come out identical to robust_scale's own.
+    """
+    features, summary = clean_features(raw)
+    ilr, _ = ilr_features(features)
+    _, diagnostics = robust_scale(ilr[in_population])
+    logged = ilr.copy()
+    for c in LOG1P_COLUMNS:
+        if c in logged.columns:
+            logged[c] = np.log1p(logged[c].clip(lower=0))
+    return (logged - logged[in_population].median()) / diagnostics["divisor"], summary
+
+
+def population_percentiles(scaled: pd.DataFrame, in_population: np.ndarray) -> pd.DataFrame:
+    """Each cell's percentile (0-100) on each feature *within the population*, so a cell outside it still gets the
+    position it would have among it. Ties take the midpoint, as rank(pct=True) does.
+
+    Plain 0-100, not the -100..+100 of features.percentiles (eda's radar convention, median at 0): on a chart labelled
+    "percentile" a negative value reads as nonsense."""
+    values = scaled.to_numpy()
+    reference = np.sort(values[in_population], axis=0)
+    pct = np.empty_like(values)
+    for j in range(values.shape[1]):
+        below = np.searchsorted(reference[:, j], values[:, j], side="left")
+        at_or_below = np.searchsorted(reference[:, j], values[:, j], side="right")
+        pct[:, j] = (below + at_or_below) / (2 * len(reference))
+    return pd.DataFrame(pct * 100, index=scaled.index, columns=scaled.columns)
+
 
 def query_characterisation(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """The raw (unscaled) characterisation, indexed by spatial_id in ascending order."""
@@ -184,9 +254,10 @@ class Characterisation:
 
     spatial_id: np.ndarray  # int64 (n,)
     pfa24cd: np.ndarray  # object (n,): the cell's force code, None for the one (Scottish border) cell with no force
+    in_population: np.ndarray  # bool (n,): the hotspot cells the scaling and percentiles are fitted over
     columns: tuple[str, ...]
-    scaled: np.ndarray  # float32 (n, p): robust-scaled, what distances are measured in
-    percentile: np.ndarray  # float32 (n, p): national percentile per column, -100..+100, for the radars
+    scaled: np.ndarray  # float32 (n, p): robust-scaled on the population, what distances are measured in
+    percentile: np.ndarray  # float32 (n, p): percentile within the population per column, 0..100, for the radars
     imputed_pct: dict[str, float]  # share of each raw column that was median-filled
     build_seconds: float
     peak_rss_mb: float
@@ -201,11 +272,13 @@ class Characterisation:
 def build_characterisation(con: duckdb.DuckDBPyConnection) -> Characterisation:
     start = time.perf_counter()
     raw = query_characterisation(con)
-    scaled, summary = scale_features(raw.drop(columns="pfa24cd"))
-    pct = percentiles(scaled)
+    in_population = raw.index.isin(query_hotspot_population(con))
+    scaled, summary = scale_to_population(raw.drop(columns="pfa24cd"), in_population)
+    pct = population_percentiles(scaled, in_population)
     bundle = Characterisation(
         spatial_id=raw.index.to_numpy(),
         pfa24cd=raw.pfa24cd.to_numpy(),
+        in_population=in_population,
         columns=tuple(scaled.columns),
         scaled=scaled.to_numpy(dtype=np.float32),
         percentile=pct.to_numpy(dtype=np.float32),
@@ -214,7 +287,7 @@ def build_characterisation(con: duckdb.DuckDBPyConnection) -> Characterisation:
         peak_rss_mb=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,  # KiB on Linux
     )
     # shared by every session: make accidental in-place edits fail loudly
-    for array in (bundle.spatial_id, bundle.pfa24cd, bundle.scaled, bundle.percentile):
+    for array in (bundle.spatial_id, bundle.pfa24cd, bundle.in_population, bundle.scaled, bundle.percentile):
         array.flags.writeable = False
     return bundle
 
@@ -283,6 +356,74 @@ def force_codes() -> dict[str, str]:
     rows = get_con().sql(f"SELECT pfa24nm, spatial_id FROM read_parquet('{SOURCE}/extract/police_force_areas.parquet')")
     by_name = dict(rows.fetchall())
     return {force: by_name[fix_force_name(force)] for force in get_args(Force)}
+
+
+# police.uk's force names, once the suffix is stripped, are the app's (`Force`) except for these
+_POLICE_UK_NAMES = {"Devon & Cornwall": "Devon and Cornwall", "Dyfed-Powys": "Dyfed Powys"}
+
+
+def app_force_name(police_uk_name: str) -> str:
+    """e.g. "Metropolitan Police Service" -> "Metropolitan", "Dyfed-Powys Police" -> "Dyfed Powys"."""
+    for suffix in (" Police Service", " Constabulary", " Police"):
+        police_uk_name = police_uk_name.removesuffix(suffix)
+    return _POLICE_UK_NAMES.get(police_uk_name, police_uk_name)
+
+
+def query_coverage(con: duckdb.DuckDBPyConnection, crime_type: CrimeType, months: list[str]) -> pd.Series:
+    """police.uk's own count of `crime_type` per force and month, indexed by (app force name, month). Forces outside
+    `Force` (British Transport Police, PSNI) are dropped."""
+    coverage = con.sql(
+        f"""
+        SELECT force, month, n_crimes
+        FROM read_parquet('{SOURCE}/extract/crime_coverage.parquet')
+        WHERE crime_type = ? AND month IN ?
+        """,
+        params=(crime_type, months),
+    ).df()
+    coverage["force"] = coverage["force"].map(app_force_name)
+    coverage = coverage[coverage["force"].isin(get_args(Force))]
+    return coverage.set_index(["force", "month"])["n_crimes"]
+
+
+@st.cache_data(max_entries=64)
+def coverage(crime_type: CrimeType, months: tuple[str, ...]) -> pd.Series:
+    return query_coverage(get_con(), crime_type, list(months))
+
+
+def coverage_gaps(coverage: pd.Series, months: tuple[str, ...]) -> dict[str, list[str]]:
+    """App force name -> the months in `months` it recorded none of the crime type in, for forces with any such month.
+    A missing row counts as none."""
+    n = coverage.to_dict()
+    gaps = {force: [m for m in months if n.get((force, m), 0) <= 0] for force in get_args(Force)}
+    return {force: missing for force, missing in gaps.items() if missing}
+
+
+FORCE_TOLERANCE_M = 50
+
+
+@st.cache_resource
+def force_outlines() -> dict[str, list[list[list[list[float]]]]]:
+    """pfa24cd -> the force area as pydeck polygons, each [exterior, *holes] with rings of [lon, lat].
+
+    Simplified to within FORCE_TOLERANCE_M of the true line: a quarter of a cell's 202m side, so at worst a border
+    cell straddles the "within force" outline rather than sitting clearly on the wrong side of it, while cutting 4.1M
+    vertices to ~50k (the largest force ~5k, ~110 KB of JSON per rerun). Each force is simplified on its own, so
+    neighbours' shared edges can differ by up to twice that.
+    """
+    rows = get_con().sql(
+        f"""
+        SELECT spatial_id, ST_AsWKB(ST_SimplifyPreserveTopology(geom, {FORCE_TOLERANCE_M}))
+        FROM read_parquet('{SOURCE}/extract/police_force_areas.parquet')
+        """
+    )
+
+    def rings(polygon: shapely.Polygon) -> list[list[list[float]]]:
+        return [
+            np.round(np.column_stack(_TO_WGS84.transform(*np.asarray(ring.coords).T[:2])), COORD_DECIMALS).tolist()
+            for ring in (polygon.exterior, *polygon.interiors)
+        ]
+
+    return {code: [rings(p) for p in shapely.get_parts(shapely.from_wkb(bytes(wkb)))] for code, wkb in rows.fetchall()}
 
 
 @st.cache_data(max_entries=256)

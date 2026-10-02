@@ -1,0 +1,32 @@
+name: Lint and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        python-version: "3.14"
+    - name: Build
+      run: |
+        uv sync --locked
+    - name: Lint
+      run: |
+        uv run ruff check .
+        uv run ruff format --check .
+        uv run ty check
+    - name: Test
+      # The Azure tests (test_data.py, test_app.py) skip without this secret: it is unavailable to pull requests from
+      # forks, and to this repo until someone adds it under Settings > Secrets and variables > Actions
+      env:
+        AZURE_STORAGE_CONNSTR: ${{ secrets.AZURE_STORAGE_CONNSTR }}
+      run: |
+        uv run pytest -rs
