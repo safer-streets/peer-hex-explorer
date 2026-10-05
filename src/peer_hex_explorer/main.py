@@ -35,7 +35,6 @@ from peer_hex_explorer.utils import CrimeType
 CATEGORIES = get_args(CrimeType)
 NATIONAL, WITHIN_FORCE = "National", "Within force"
 LAND_COVER = "land cover"
-DEFAULT_OFF = {"retail"}  # retail_centre_distance: 31% median-filled, and ho_top_kc dropped it
 
 CELL_COLOUR = "#356285"  # hex_features.CELL_COLOUR
 CELL_OUTLINE = "#1d3a52"
@@ -48,6 +47,7 @@ FORCE_OUTLINE = "#333333"  # the "within force" boundary: dark and unfilled, so 
 NO_DATA_COLOUR = "#6b6b6b"  # forces without police.uk data: neutral, so it reads as absence rather than a category
 
 N_TOP_CONTRIBUTIONS = 3
+RADAR_LIMIT = 3  # radar radius, in population IQRs either side of the median: 0-4% of hotspot values per feature beyond
 
 
 def _rgba(hex_colour: str, alpha: float) -> list[int]:
@@ -132,8 +132,7 @@ with the crime type and window, even though the distances don't. Under "Within f
 the force the selected hotspot lies in.
 
 **How "near" is measured.** Each cell is described by {len(bundle.columns)} features (road length, junctions, school
-catchment depth, food/alcohol/takeaway outlets, hospitals, transit stops, residents, workers, distance to a retail
-centre, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
+catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
 median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
 cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
 then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Distance is Euclidean over the selected
@@ -148,14 +147,16 @@ the ones being compared, so the weight is shared out much more evenly.
 **Peer table.** "Differs most on" is each feature's share of that peer's squared distance to the target: the features
 where the match is weakest.
 
-**Radars.** Each spoke is the cell's percentile on that feature *among the hotspot population*: 0 at the centre
-(lower than every hotspot), 50 on the dotted ring (the typical hotspot), 100 at the rim (higher than every hotspot). A
-cell outside the population is placed where it would rank among it. The target is the tinted shape behind every
-panel.
+**Radars.** Each spoke is the cell's scaled value on that feature, the same numbers distances are measured in: the
+dotted ring is the median hotspot, and the centre and rim are {RADAR_LIMIT} IQRs (of the hotspot population) below
+and above it. Values beyond that are drawn at the edge; hovering gives the true value. So the gap between a peer and
+the target on a spoke is their difference on that feature, comparable from spoke to spoke. Some spokes only run one
+way from the ring: most hotspots have no pub, takeaway or hospital, so having none *is* typical and sits on the ring. The target is the tinted shape behind every panel.
 
 **Caveats.**
-- Median-imputed values: {imputed}. These cells read as typical on that feature, whatever they really are; retail
-  distance is off by default for this reason.
+- Median-imputed values: {imputed}. These cells read as typical on that feature, whatever they really are.
+- Shops are Overture Maps places in any shop category (every kind of store, markets, kiosks, shopping centres), so
+  they are only as complete as Overture is.
 - Northern Ireland is excluded throughout: police.uk publishes its crime, but it has no matching geography or features.
 - Each cell belongs to one force (by greatest overlap), which is what "within force" uses.
 - Some forces publish nothing to police.uk (Greater Manchester, since 2019), and others miss months. The map greys
@@ -374,19 +375,27 @@ def cell_map(
 
 
 def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_reference: bool) -> go.Figure:
-    """One panel, after hex_features.radar_panels(radial="percentile"): fixed spoke order (the shape *is* the
-    identity, so a reordered axis would be a different chart), the reference tinted behind, the median dotted. Plain
-    0-100 percentiles rather than eda's -100..+100."""
+    """One panel, after hex_features.radar_panels: fixed spoke order (the shape *is* the identity, so a reordered axis
+    would be a different chart), the reference tinted behind, the median dotted.
+
+    Radius is the scaled value itself, clipped to ±RADAR_LIMIT, not eda's percentile: it's what distances are measured
+    in, so the gap on a spoke is that feature's difference. Percentiles stretched the scale unevenly and gave tied
+    values their midpoint, so a hotspot with no pub (56% of them) plotted at 28, not the centre. Hover gives the
+    unclipped value."""
 
     def closed(a):
         return [*a, a[0]]
 
+    def clipped(a):
+        return closed(np.clip(a, -RADAR_LIMIT, RADAR_LIMIT))
+
     theta = closed(labels)
     colour = REFERENCE_COLOUR if is_reference else CELL_COLOUR
+    hover = "%{theta}: %{customdata:+.2f} IQR<extra></extra>"
     fig = go.Figure()
     fig.add_trace(
         go.Scatterpolar(
-            r=[50] * len(theta),
+            r=[0] * len(theta),
             theta=theta,
             mode="lines",
             line={"color": "#888888", "width": 1, "dash": "dot"},
@@ -396,24 +405,26 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
     if not is_reference:
         fig.add_trace(
             go.Scatterpolar(
-                r=closed(reference),
+                r=clipped(reference),
                 theta=theta,
+                customdata=closed(reference),
                 fill="toself",
                 fillcolor=_css_rgba(REFERENCE_TINT, 0.3),
                 line={"color": REFERENCE_TINT, "width": 1.2},
                 name="target",
-                hovertemplate="%{theta}: percentile %{r:.0f}",
+                hovertemplate=hover,
             )
         )
     fig.add_trace(
         go.Scatterpolar(
-            r=closed(values),
+            r=clipped(values),
             theta=theta,
+            customdata=closed(values),
             fill="toself",
             fillcolor=_css_rgba(colour, 0.18),
             line={"color": colour, "width": 2},
             name="this cell",
-            hovertemplate="%{theta}: percentile %{r:.0f}",
+            hovertemplate=hover,
         )
     )
     fig.update_layout(
@@ -422,7 +433,11 @@ def radar(values: np.ndarray, reference: np.ndarray, labels: list[str], is_refer
         margin={"l": 80, "r": 80, "t": 40, "b": 40},
         polar={
             # no tick labels: they sit on a spoke and collide with its label; the caption gives the scale
-            "radialaxis": {"range": [0, 100], "tickvals": [0, 50, 100], "showticklabels": False},
+            "radialaxis": {
+                "range": [-RADAR_LIMIT, RADAR_LIMIT],
+                "tickvals": [-RADAR_LIMIT, 0, RADAR_LIMIT],
+                "showticklabels": False,
+            },
             "angularaxis": {"tickfont": {"size": 12}},
         },
     )
@@ -438,7 +453,7 @@ def cell_panels(bundle: Characterisation, rows: list[int], panels: pd.DataFrame,
     """One panel per cell, one per row, the target (rows[0]) first: a close-up map of the hex beside its radar, as in
     the PDFs of ho_top_kc.py. `panels` is one row per cell, in the same order, with `heading` and `subheading`."""
     labels = [SHORT_LABELS.get(bundle.columns[c], bundle.columns[c]) for c in cols]
-    reference = bundle.percentile[rows[0], cols]
+    reference = bundle.scaled[rows[0], cols]
     for row, spatial_id, heading, subheading in zip(
         rows, panels.index, panels["heading"], panels["subheading"], strict=True
     ):
@@ -451,7 +466,7 @@ def cell_panels(bundle: Characterisation, rows: list[int], panels: pd.DataFrame,
                 cell_image(int(spatial_id), REFERENCE_COLOUR if is_reference else CELL_COLOUR), width="stretch"
             )
             radar_col.plotly_chart(
-                radar(bundle.percentile[row, cols], reference, labels, is_reference),
+                radar(bundle.scaled[row, cols], reference, labels, is_reference),
                 width="stretch",
                 config={"displayModeBar": False},
                 key=f"radar-{spatial_id}",
@@ -504,7 +519,7 @@ def main() -> None:
         "Features",
         list(groups),
         selection_mode="multi",
-        default=[g for g in groups if g not in DEFAULT_OFF],
+        default=list(groups),
         key="features",
         help="Distances are measured over the highlighted features. Land cover is the two log-ratio coordinates of "
         "urban / suburban / greenspace share, taken together.",
@@ -591,8 +606,8 @@ def main() -> None:
 
     st.markdown("#### Cells and profiles")
     st.caption(
-        "Radars show each feature's percentile among hotspot cells: centre 0, dotted ring 50 (median), rim 100. "
-        "The target is the tinted shape behind each peer's radar."
+        f"Radars show each feature's scaled value: dotted ring the median hotspot, centre and rim {RADAR_LIMIT} IQRs "
+        "below and above it (further out is drawn at the edge). The target is the tinted shape behind each peer's radar."
     )
     panels = pd.DataFrame(
         {

@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from peer_hex_explorer.data import (
+    SHOP_CATEGORIES,
     build_characterisation,
     coverage_gaps,
     query_characterisation,
@@ -71,7 +72,7 @@ def test_matches_notebook_parquet(raw):
     assert len(common) / len(raw) > 0.99, (len(common), len(raw))
     features = [c for c in raw.columns if c != "pfa24cd"]
     assert set(features) <= set(reference.columns)
-    for c in features:
+    for c in set(features) & set(reference.columns):
         pd.testing.assert_series_equal(
             raw.loc[common, c], reference.loc[common, c].astype("float64"), check_names=False, rtol=1e-9
         )
@@ -85,10 +86,23 @@ def test_no_northern_ireland(con, raw):
     assert not np.isin(raw.index.to_numpy(), ni).any()
 
 
+def test_shops(con, raw):
+    shops = raw["n_shops"]
+    assert (shops >= 0).all()  # and so no NaN: nothing is left for the median fill
+    shop_cells = con.execute(
+        f"SELECT beahiv202_id FROM read_parquet('{SOURCE}/extract/poi.parquet') WHERE basic_category IN ?",
+        (list(SHOP_CATEGORIES),),
+    ).fetchnumpy()["beahiv202_id"]
+    # the extract's bbox reaches into Scotland, so only shops in an E&W cell are expected in the counts
+    in_matrix = np.isin(shop_cells, raw.index.to_numpy())
+    assert in_matrix.sum() > 100_000  # i.e. the POI extract has been rerun with the shop categories
+    assert shops.sum() == in_matrix.sum()
+
+
 def test_bundle(con):
     bundle = build_characterisation(con.cursor())
     n = len(bundle.spatial_id)
-    assert bundle.scaled.shape == bundle.percentile.shape == (n, len(bundle.columns))
+    assert bundle.scaled.shape == (n, len(bundle.columns))
     assert np.all(np.diff(bundle.spatial_id) > 0)
     assert np.isfinite(bundle.scaled).all()
     assert bundle.rows_of(bundle.spatial_id[[0, 5, n - 1]]).tolist() == [0, 5, n - 1]

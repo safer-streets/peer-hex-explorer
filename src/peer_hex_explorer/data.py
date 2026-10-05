@@ -76,14 +76,50 @@ def _register_k_ring(con: duckdb.DuckDBPyConnection) -> None:
         con.create_function("beahiv_k_ring", _k_ring, [BIGINT, INTEGER], list_type(BIGINT), type=PythonUDFType.ARROW)
 
 
+# Overture basic categories counted as shops: safer-streets-tooling's POI config `shop_categories`, as eda's
+# hex_features.SHOP_CATEGORIES (every *_store, plus shopping, shopping_mall, superstore, market, farmers_market and
+# kiosk; not coffee_shop, which is catering)
+SHOP_CATEGORIES = (
+    "animal_and_pet_store",
+    "arts_crafts_and_hobby_store",
+    "books_music_and_video_store",
+    "convenience_store",
+    "department_store",
+    "discount_store",
+    "electronics_store",
+    "farmers_market",
+    "fashion_and_apparel_store",
+    "flowers_and_gifts_store",
+    "food_and_beverage_store",
+    "hardware_home_and_garden_store",
+    "kiosk",
+    "market",
+    "musical_instrument_and_pro_audio_store",
+    "office_supply_store",
+    "personal_care_and_beauty_store",
+    "pharmacy_and_drug_store",
+    "second_hand_store",
+    "shopping",
+    "shopping_mall",
+    "specialty_store",
+    "sporting_goods_store",
+    "superstore",
+    "toys_and_games_store",
+    "vehicle_parts_store",
+    "warehouse_club_store",
+)
+
 # beahiv-characterisation.ipynb's query, minus the IMD columns, oa21cd and lsoa21cd (context, not
 # features: hex_features.NON_FEATURE_COLUMNS) and with three changes:
 # - n_stops is COALESCEd: a NULL there is a structural zero (see features.clean_features), so it is
 #   fixed at source rather than downstream
 # - Northern Ireland is excluded. The BEAHIV grid covers it, but NI matches no E&W boundary so every
 #   geography column is NULL (12,136 cells, all with msoa21cd, lsoa21cd and pfa24cd NULL together).
-#   It has to go *before* scaling, or NI cells move every median, IQR and percentile.
+#   It has to go *before* scaling, or NI cells move every median and IQR.
 # - pfa24cd comes along as context (one per cell: max overlap) for the within-force scope
+# - retail_centre_distance is replaced by n_shops, as in eda: the distance was only looked up within 2km and NULL
+#   beyond, so 31% of cells were median-filled to a typical distance when they are the furthest away. The geogs no
+#   longer carry it.
 # bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
 CHARACTERISATION_QUERY = f"""
 WITH bh_hosp_kring AS (
@@ -104,7 +140,6 @@ WITH bh_hosp_kring AS (
 SELECT
     hex.spatial_id,
     hex.pfa24cd,
-    hex.retail_centre_distance,
     COALESCE(hex.urban_overlap_area / hex.cell_area, 0) AS prop_urban,
     COALESCE(hex.suburban_overlap_area / hex.cell_area, 0) AS prop_suburban,
     COALESCE(hex.road_overlap_length, 0) AS road_overlap_length,
@@ -114,6 +149,7 @@ SELECT
     COALESCE(schools.sum_overlap_area / hex.cell_area, 0) AS school_isochrone_depth,
     COALESCE(poi.n_alcohol, 0) AS n_alcohol,
     COALESCE(poi.n_food, 0) AS n_food,
+    COALESCE(poi.n_shops, 0) AS n_shops,
     COALESCE(hosp.n_hospital, 0) AS n_hospital,
     COALESCE(naptan.n_stops, 0) AS n_stops,
     COALESCE(food_outlets.n_takeaways, 0) AS n_takeaways,
@@ -125,6 +161,7 @@ LEFT JOIN (
         poi.beahiv202_id AS spatial_id,
         COUNT(*) FILTER (WHERE basic_category IN ('bar', 'alcoholic_beverage_venue', 'lounge', 'inn')) AS n_alcohol,
         COUNT(*) FILTER (WHERE basic_category IN ('casual_eatery', 'fast_food_restaurant', 'food_service')) AS n_food, -- removed 'restaurant'
+        COUNT(*) FILTER (WHERE basic_category IN {SHOP_CATEGORIES}) AS n_shops,
     FROM read_parquet('{SOURCE}/extract/poi.parquet') poi
     GROUP BY poi.beahiv202_id
 ) poi ON hex.spatial_id = poi.spatial_id
@@ -164,7 +201,7 @@ HOTSPOT_SHARE = 0.25
 
 
 def query_hotspot_population(con: duckdb.DuckDBPyConnection) -> np.ndarray:
-    """The spatial_ids, ascending, the scaling and the radar percentiles are fitted over.
+    """The spatial_ids, ascending, the scaling is fitted over.
 
     NI is excluded inside the counts, as in hotspot_cells: it would otherwise be in each type's 25% denominator and
     take slots in its ranking. `spatial_id` breaks count ties so the cut lands the same way every time.
@@ -213,22 +250,6 @@ def scale_to_population(raw: pd.DataFrame, in_population: np.ndarray) -> tuple[p
     return (logged - logged[in_population].median()) / diagnostics["divisor"], summary
 
 
-def population_percentiles(scaled: pd.DataFrame, in_population: np.ndarray) -> pd.DataFrame:
-    """Each cell's percentile (0-100) on each feature *within the population*, so a cell outside it still gets the
-    position it would have among it. Ties take the midpoint, as rank(pct=True) does.
-
-    Plain 0-100, not the -100..+100 of features.percentiles (eda's radar convention, median at 0): on a chart labelled
-    "percentile" a negative value reads as nonsense."""
-    values = scaled.to_numpy()
-    reference = np.sort(values[in_population], axis=0)
-    pct = np.empty_like(values)
-    for j in range(values.shape[1]):
-        below = np.searchsorted(reference[:, j], values[:, j], side="left")
-        at_or_below = np.searchsorted(reference[:, j], values[:, j], side="right")
-        pct[:, j] = (below + at_or_below) / (2 * len(reference))
-    return pd.DataFrame(pct * 100, index=scaled.index, columns=scaled.columns)
-
-
 def query_characterisation(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """The raw (unscaled) characterisation, indexed by spatial_id in ascending order."""
     _register_k_ring(con)
@@ -254,10 +275,9 @@ class Characterisation:
 
     spatial_id: np.ndarray  # int64 (n,)
     pfa24cd: np.ndarray  # object (n,): the cell's force code, None for the one (Scottish border) cell with no force
-    in_population: np.ndarray  # bool (n,): the hotspot cells the scaling and percentiles are fitted over
+    in_population: np.ndarray  # bool (n,): the hotspot cells the scaling is fitted over
     columns: tuple[str, ...]
-    scaled: np.ndarray  # float32 (n, p): robust-scaled on the population, what distances are measured in
-    percentile: np.ndarray  # float32 (n, p): percentile within the population per column, 0..100, for the radars
+    scaled: np.ndarray  # float32 (n, p): robust-scaled on the population; distances and radars both use it
     imputed_pct: dict[str, float]  # share of each raw column that was median-filled
     build_seconds: float
     peak_rss_mb: float
@@ -274,20 +294,18 @@ def build_characterisation(con: duckdb.DuckDBPyConnection) -> Characterisation:
     raw = query_characterisation(con)
     in_population = raw.index.isin(query_hotspot_population(con))
     scaled, summary = scale_to_population(raw.drop(columns="pfa24cd"), in_population)
-    pct = population_percentiles(scaled, in_population)
     bundle = Characterisation(
         spatial_id=raw.index.to_numpy(),
         pfa24cd=raw.pfa24cd.to_numpy(),
         in_population=in_population,
         columns=tuple(scaled.columns),
         scaled=scaled.to_numpy(dtype=np.float32),
-        percentile=pct.to_numpy(dtype=np.float32),
         imputed_pct={k: float(v) for k, v in summary["median_imputed_%"].items() if v > 0},
         build_seconds=time.perf_counter() - start,
         peak_rss_mb=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,  # KiB on Linux
     )
     # shared by every session: make accidental in-place edits fail loudly
-    for array in (bundle.spatial_id, bundle.pfa24cd, bundle.in_population, bundle.scaled, bundle.percentile):
+    for array in (bundle.spatial_id, bundle.pfa24cd, bundle.in_population, bundle.scaled):
         array.flags.writeable = False
     return bundle
 
@@ -429,7 +447,7 @@ def force_outlines() -> dict[str, list[list[list[list[float]]]]]:
 @st.cache_data(max_entries=256)
 def descriptions(ids: tuple[int, ...]) -> pd.Series:
     """`description` for the cells on screen, indexed by spatial_id: a sentence on the cell's character, road,
-    retail centre and MSOA, e.g. "Urban, on Briggate; in Albion Street & Briggate, Leeds (regional centre). Leeds 111."
+    greenspace, school, shops and MSOA, e.g. "Urban, on Briggate (A64), near Leeds Grammar School; 87 shops. Leeds 111."
     """
     return (
         get_con()

@@ -73,13 +73,13 @@ network, so a one-off failure there is worth a rerun before debugging.
   docstring); `test_features.py` failing is how drift shows up.
 - **Scaling is fitted once, on a fixed hotspot population, column by column, and applied to every cell.** The
   population (`data.query_hotspot_population`) is the union over crime types of the fewest cells accounting for 25%
-  of that type's crime, all months: eda's `hotspot_cells` rule. The radar percentiles are ranked over the same
-  population. Being fixed and per-column is what keeps distances unchanged when a feature is switched off, and
+  of that type's crime, all months: eda's `hotspot_cells` rule. The radars draw these same scaled values (clipped at
+  ±3 IQRs), so they show what distances measure. Being fixed and per-column is what keeps distances unchanged when a feature is switched off, and
   independent of the crime type and window. Anything that refits scaling per selection (per crime type, per force, per
   feature set) breaks that property and needs a journal entry saying why. Imputation (`clean_features`) stays national.
 - **Northern Ireland is excluded before scaling and before ranking.** The BEAHIV tables include NI cells with every
   geography column NULL; both the characterisation query and the crime-count query filter `msoa21cd IS NOT NULL`
-  *inside* the query. Filtering afterwards would leave NI in the medians, percentiles and rank slots.
+  *inside* the query. Filtering afterwards would leave NI in the medians, IQRs and rank slots.
 - **Peers come only from cells with ≥1 crime of the selected type in the window.** There is no "all cells" option by
   design, and the page says so (More info, and the caption under the peer heading).
 - **No per-panel WebGL.** The overview is the only pydeck map. Panel maps are server-side images from
