@@ -6,9 +6,9 @@ over with the code. This is a copy, not a dependency, so tests/test_features.py 
 original's output on a fixed sample: if either copy changes, that test is what notices.
 
 `scale_features` is the composition `ho_top_kc.load_scaled_features` makes (clean -> ILR ->
-robust scale), except that `retail_centre_distance` is kept: the app scales it with everything
-else and lets the user switch it off. Scaling is column by column, so a column being present
-changes nothing about how any other column is scaled.
+robust scale). `n_shops` replaces retail_centre_distance in both, which the geogs no longer carry.
+Scaling is column by column, so a column being present changes nothing about how any other column
+is scaled.
 """
 
 import numpy as np
@@ -28,6 +28,7 @@ LOG1P_COLUMNS = [
     "n_hospital",
     "n_stops",
     "n_takeaways",
+    "n_shops",
     "road_intersections",
     "road_overlap_length",
     "residential_population",
@@ -56,7 +57,7 @@ SHORT_LABELS = {
     "n_takeaways": "takeaways",
     "residential_population": "residents",
     "workplace_population": "workers",
-    "retail_centre_distance": "retail",
+    "n_shops": "shops",
     "ilr_urban_vs_suburban": "urban-suburban",
     "ilr_urban_suburban_vs_greenspace": "builtup-greenspace",
 }

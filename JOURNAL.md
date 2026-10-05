@@ -6,6 +6,56 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Shops replace retail centre distance
+
+- **Why** — `retail_centre_distance` is only looked up within 2km (tooling's `RETAIL_RADIUS`) and is NULL beyond:
+  31% of cells, median-filled, so the remotest cells read as a typical distance from a centre. Requested: drop it
+  and count shops instead.
+- **What**
+  - safer-streets-tooling (branch `poi-shops`): 27 Overture shop categories added to the POI extract's config. The
+    extract has to be rerun before `n_shops` is anything but 0.
+  - `data.py`: `SHOP_CATEGORIES`; the characterisation query drops `retail_centre_distance` and adds `n_shops`
+    (`COUNT(*) FILTER` over `poi`, like `n_alcohol`/`n_food`).
+  - `main.py`: `DEFAULT_OFF` removed, so every feature starts on. More info's feature list and caveats.
+  - `features.py`: `n_shops` in `LOG1P_COLUMNS` and `SHORT_LABELS` (`"shops"`), copied from eda's `hex_features.py`,
+    which made the same change; `retail_centre_distance`'s label is gone. `test_shops` checks the counts against
+    the extract exactly, and notebook parity now covers `n_shops` too.
+  - Test references regenerated (2026-10-05): eda's `beahiv202-characterisation.parquet` re-run (cells 2, 3, 7, 9 and
+    11 of `beahiv-characterisation.ipynb`, on the re-extracted POI), and `tests/fixtures/parity_*.parquet`
+    re-sampled from it by `test_features.py`'s recipe, so both carry `n_shops`.
+- **Design decisions**
+  - **Changed in eda first, then copied.** It began as a fork here (`data.LOG1P`, a local `SHORT_LABELS` entry),
+    but eda's characterisations dropped the distance too, once the geogs stopped carrying it. Making the change
+    upstream keeps `features.py` an exact copy, and the local workarounds are gone.
+  - **log1p, like the other outlet counts**: shop counts have the same skewed, zero-heavy shape.
+  - **On by default.** Retail was off because it was a third median-filled; a count has no gaps to fill.
+  - **Retail proximity was tried first** (1 in a centre, decaying to 0 at 2km) and dropped. Two findings: linear
+    (1 - d/2km) gave a z of -9.4 beyond 2km and ~23% of hotspot-to-hotspot squared distance, because 56% of
+    hotspots are in a centre (d = 0) and that sets a tiny IQR; exp(-d/500m) brought it to 7%. And no curve of
+    distance tells cells *inside* a centre apart, which a count does.
+- **Follow-ups**
+  - Shop weight in the distance hasn't been measured (no data yet). Check its share once the extract is in.
+
+## Radars: scaled values, not percentiles
+
+- **Why** — Cells in a retail centre didn't reach the rim of the retail spoke. Percentile ties take their midpoint:
+  55.5% of hotspots have proximity exactly 1, so they all plotted at 72. Mirror image on the outlet counts: hotspots
+  with none (51-61%) plotted at 26-31, not the centre. More generally, percentiles stretched the scale unevenly, so a
+  gap on a spoke didn't match that feature's part of the distance.
+- **What**
+  - `main.py`: `radar` draws `bundle.scaled` clipped to ±`RADAR_LIMIT` (3), ring at 0 (median hotspot); hover shows
+    the unclipped value in IQRs. More info and the caption rewritten.
+  - `data.py`: `population_percentiles` and `Characterisation.percentile` removed. `tests/test_scaling.py` loses
+    `test_population_percentiles`; `features.percentiles` stays as the parity copy. AGENTS.md's scaling and NI rules.
+- **Design decisions**
+  - **Same units as the distance.** The gap on a spoke is that feature's difference, comparable across spokes.
+  - **±3, chosen by the user over ±1 and ±2.** Every feature's population divisor is its IQR (no sd/unit fallback),
+    so "IQR" is exact. 0-4% of hotspot values per feature fall outside ±3 (residents 4.2%, hospital 3.1%); ±1 would
+    have clipped 92% of hotspots on at least one spoke.
+  - **One-sided spokes are left as they are.** Retail and the outlet counts sit on the ring at their typical value
+    (in a centre; none) and only extend one way. That's what the distance sees; More info says so.
+
+
 ## CI
 
 - **Why** — There was none; the gates only ran in pre-commit.
