@@ -6,6 +6,35 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Cosine distance; consistent coverage notes
+
+- **Why** — Requested: a switch between Euclidean and cosine similarity. And the greyed-out force notes read
+  inconsistently: "no robbery recorded in the window" for the whole window, but "none recorded in 2025-03" (no crime
+  type) for part of it.
+- **What**
+  - `peers.py`: `Metric` (`"euclidean"` | `"cosine"`); `nearest` and `contributions` take `metric`, default Euclidean.
+    `_directions` normalises rows to unit length.
+  - `main.py`: "Distance" segmented control in the Peers sidebar (session key `metric`, not in the table key, so the
+    selected hotspot survives a switch). Distances shown to 3 dp under cosine (`DISTANCE_DIGITS`). The peer caption
+    names the metric. Warning when the target is all zeros over the selected features. More info: the two metrics,
+    "differs most on" and the radars under cosine. Coverage note is now "no {crime} recorded in {months}" both ways.
+  - Tests: four cosine cases in `test_peers.py`; `test_app.py::test_cosine_peers`. AGENTS.md's peers.py row and
+    UI-state checklist item.
+- **Design decisions**
+  - **Cosine on the scaled matrix as it is.** Centring is on the median hotspot, so cosine compares the direction a
+    cell departs from the median hotspot in, ignoring how far. Scaling is unchanged, so the fixed-population property
+    holds for both metrics.
+  - **Computed as ||û − v̂||² / 2**, equal to 1 − cos for unit vectors: never slightly negative from rounding, and it
+    makes "differs most on" exact (each feature's share of the squared unit-vector difference).
+  - **Zero rows have no direction**: excluded as candidates, and a zero target gets a warning rather than arbitrary
+    peers. Only likely with very few features selected (e.g. one outlet count, where the median hotspot has none).
+  - **Radars unchanged**: they still show scaled values, so a cosine peer can be a bigger or smaller copy of the
+    target's shape. More info says to compare shapes.
+- **Follow-ups**
+  - `AppTest` drops an injected table selection on *any* rerun, so the "selection survives a metric switch" property
+    isn't testable there; check it in a browser.
+  - With one or two features, cosine ranks are mostly ties (broken by row index). Left as is; More info says so.
+
 ## Shops replace retail centre distance
 
 - **Why** — `retail_centre_distance` is only looked up within 2km (tooling's `RETAIL_RADIUS`) and is NULL beyond:
