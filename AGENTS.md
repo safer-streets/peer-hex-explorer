@@ -19,7 +19,7 @@ are copied in (see Developer Rules).
 | [main.py](src/peer_hex_explorer/main.py) | The UI: sidebar, overview map, hotspot/peer tables, map + radar panels |
 | [data.py](src/peer_hex_explorer/data.py) | Connection, the startup feature-matrix build (`characterisation`), cached loaders, cell outlines |
 | [features.py](src/peer_hex_explorer/features.py) | The feature pipeline, **copied** from eda's `hex_features.py` / `clusterability_audit.py` |
-| [peers.py](src/peer_hex_explorer/peers.py) | Pure numpy: brute-force Euclidean `nearest`, per-feature `contributions` |
+| [peers.py](src/peer_hex_explorer/peers.py) | Pure numpy: brute-force Euclidean or cosine `nearest`, per-feature `contributions` |
 | [basemap.py](src/peer_hex_explorer/basemap.py) | Server-side close-up map images (OSM tiles + hex outline) for the panels |
 | [database.py](src/peer_hex_explorer/database.py) | DuckDB connector (spatial + azure), `SOURCE = "az://phase2"` |
 | [utils.py](src/peer_hex_explorer/utils.py) | `CrimeType`, `Force`, `Month`, `fix_force_name` (from the prototype) |
@@ -99,7 +99,7 @@ network, so a one-off failure there is worth a rerun before debugging.
    NI-free, still ranked `n DESC, spatial_id`.
 5. **Caching** — expensive loaders are cached with a `max_entries`/`ttl` bound; cheap filtering stays outside.
 6. **UI state** — the hotspot selection lives in the table's widget state, keyed on crime type, lookback and number
-   of hotspots; changing features, k or scope must keep it.
+   of hotspots; changing features, k, scope or distance metric must keep it.
 7. **Docs** — the More info panel and [JOURNAL.md](JOURNAL.md) match the behaviour.
 
 ## QA Rules

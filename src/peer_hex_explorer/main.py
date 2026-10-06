@@ -29,11 +29,13 @@ from peer_hex_explorer.data import (
     force_outlines,
 )
 from peer_hex_explorer.features import SHORT_LABELS
-from peer_hex_explorer.peers import contributions, nearest
+from peer_hex_explorer.peers import Metric, contributions, nearest
 from peer_hex_explorer.utils import CrimeType
 
 CATEGORIES = get_args(CrimeType)
 NATIONAL, WITHIN_FORCE = "National", "Within force"
+METRICS: tuple[Metric, ...] = get_args(Metric)
+DISTANCE_DIGITS = {"euclidean": 2, "cosine": 3}  # cosine distances between close peers are a few hundredths
 LAND_COVER = "land cover"
 
 CELL_COLOUR = "#356285"  # hex_features.CELL_COLOUR
@@ -81,6 +83,7 @@ def init(months: tuple[str, ...]) -> None:
     st.session_state.setdefault("n_hotspots", 20)
     st.session_state.setdefault("n_peers", 5)
     st.session_state.setdefault("scope", NATIONAL)
+    st.session_state.setdefault("metric", "euclidean")
 
 
 def peer_frame(
@@ -91,9 +94,10 @@ def peer_frame(
     peer_rows: np.ndarray,
     distances: np.ndarray,
     cols: np.ndarray,
+    metric: Metric,
 ) -> pd.DataFrame:
     """One row per peer, nearest first, indexed by spatial_id. `description` is added by the caller."""
-    share = contributions(bundle.scaled, target_row, peer_rows, cols)
+    share = contributions(bundle.scaled, target_row, peer_rows, cols, metric)
     labels = [SHORT_LABELS.get(bundle.columns[c], bundle.columns[c]) for c in cols]
     peer_ids = bundle.spatial_id[peer_rows]
     return pd.DataFrame(
@@ -135,9 +139,18 @@ the force the selected hotspot lies in.
 catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
 median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
 cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
-then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Distance is Euclidean over the selected
-features. Scaling is per feature, so switching a feature off leaves every other feature's scaling, and so the
-distances, unchanged; and it doesn't depend on the crime type or window.
+then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Scaling is per feature, so switching a
+feature off leaves every other feature's scaling unchanged; and it doesn't depend on the crime type or window.
+
+Distance is measured over the selected features, one of two ways:
+- **Euclidean** (the default): the straight-line distance between the two cells' scaled values. Peers are cells like
+  the hotspot on every feature, in degree as well as kind.
+- **Cosine**: 1 minus the cosine similarity, from 0 (same profile) to 2 (opposite). Because the scaling centres every
+  feature on the median hotspot, this compares the *direction* each cell departs from the median hotspot in, and
+  ignores how far: a cell with twice the hotspot's excess of pubs, shops and workers is a perfect match. Peers have
+  the same profile, at any intensity. A cell exactly at the median hotspot on every selected feature has no direction
+  and is never a cosine peer. With few features selected, many cells share a direction and the ranking is mostly
+  ties.
 
 Why hotspots and not every cell: most cells are rural or suburban, and 86-90% have no food, alcohol, takeaway or
 hospital at all. Fitted over every cell, those four have no spread to scale by, stay in raw log units, and end up
@@ -145,12 +158,14 @@ carrying half the distance between two urban cells. Fitted over hotspots, every 
 the ones being compared, so the weight is shared out much more evenly.
 
 **Peer table.** "Differs most on" is each feature's share of that peer's squared distance to the target: the features
-where the match is weakest.
+where the match is weakest. Under cosine, it is the share of the squared difference between the two cells' profiles
+scaled to unit length, which is exactly what the cosine distance sums.
 
 **Radars.** Each spoke is the cell's scaled value on that feature, the same numbers distances are measured in: the
 dotted ring is the median hotspot, and the centre and rim are {RADAR_LIMIT} IQRs (of the hotspot population) below
 and above it. Values beyond that are drawn at the edge; hovering gives the true value. So the gap between a peer and
-the target on a spoke is their difference on that feature, comparable from spoke to spoke. Some spokes only run one
+the target on a spoke is their difference on that feature, comparable from spoke to spoke. Under cosine, compare
+shapes rather than sizes: a peer can be a larger or smaller copy of the target's shape. Some spokes only run one
 way from the ring: most hotspots have no pub, takeaway or hospital, so having none *is* typical and sits on the ring. The target is the tinted shape behind every panel.
 
 **Caveats.**
@@ -197,13 +212,13 @@ def hotspot_table(hotspots: pd.DataFrame, key: str) -> None:
     st.dataframe(display, hide_index=True, on_select="rerun", selection_mode="single-row", key=key, width="stretch")
 
 
-def peer_table(peers: pd.DataFrame) -> None:
+def peer_table(peers: pd.DataFrame, digits: int) -> None:
     st.dataframe(
         peers[["#", "distance", "crimes", "rank", "description", "force", "differs most on", "spatial_id"]],
         hide_index=True,
         width="stretch",
         column_config={
-            "distance": st.column_config.NumberColumn(format="%.2f"),
+            "distance": st.column_config.NumberColumn(format=f"%.{digits}f"),
             "crimes": st.column_config.NumberColumn(format="%d"),
             "rank": st.column_config.NumberColumn(format="%d", help="National rank by crime count"),
         },
@@ -217,6 +232,7 @@ def cell_map(
     gaps: dict[str, list[str]],
     window: tuple[str, ...],
     category: CrimeType,
+    digits: int,
     scope_force: str | None = None,
 ) -> None:
     """Hotspots strong until a target is picked, then faint; the target in the reference colour, peers numbered. Frames
@@ -280,9 +296,7 @@ def cell_map(
     notes = {}
     for force, missing in gaps.items():
         whole = len(missing) == len(window)
-        notes[force] = note = (
-            f"no {category.lower()} recorded in the window" if whole else f"none recorded in {', '.join(missing)}"
-        )
+        notes[force] = note = f"no {category.lower()} recorded in " + ("the window" if whole else ", ".join(missing))
         (no_data if whole else part_data).extend(
             {"polygon": polygon, "label": force, "description": note, "detail": ""}
             for polygon in outlines.get(codes[force], [])
@@ -322,7 +336,10 @@ def cell_map(
                 f"peer {i}" + (f" · hotspot {r:.0f}" if pd.notna(r) else "")
                 for i, r in zip(peers["#"], hotspot_rank, strict=True)
             ],
-            [f"distance {d:.2f} · {n:,} crimes" for d, n in zip(peers["distance"], peers["crimes"], strict=True)],
+            [
+                f"distance {d:.{digits}f} · {n:,} crimes"
+                for d, n in zip(peers["distance"], peers["crimes"], strict=True)
+            ],
         )
         peer_only = [r for r, rank in zip(peer_records, hotspot_rank, strict=True) if pd.isna(rank)]
         peer_hot = [r for r, rank in zip(peer_records, hotspot_rank, strict=True) if pd.notna(rank)]
@@ -507,6 +524,19 @@ def main() -> None:
         required=True,
         help="Where peers may be drawn from: anywhere in England & Wales, or only the selected hotspot's force",
     )
+    metric = cast(
+        Metric,
+        st.sidebar.segmented_control(
+            "Distance",
+            METRICS,
+            format_func=str.capitalize,
+            key="metric",
+            required=True,
+            help="Euclidean: how far apart two cells are on the selected features. Cosine: how alike their profiles "
+            "are, i.e. the direction they lie in from the median hotspot, whatever their size (see More info)",
+        ),
+    )
+    digits = DISTANCE_DIGITS[metric]
     features_slot = st.sidebar.container()
 
     bundle = characterisation()  # spinner comes from its cache_resource
@@ -564,14 +594,19 @@ def main() -> None:
             message = "That cell has no features, so it can't be compared. Pick another."
         elif not len(cols):
             message = "Select at least one feature."
+        elif metric == "cosine" and not bundle.scaled[target_row, cols].any():
+            message = (
+                "That cell is exactly the median hotspot on every selected feature, so it has no profile for cosine "
+                "to compare. Pick another, add features, or use Euclidean."
+            )
         else:
             # peers come only from cells with at least one crime of this type in the window (see More info)
             mask = np.isin(bundle.spatial_id, counts.index.to_numpy())
             if scope == WITHIN_FORCE:
                 mask &= bundle.pfa24cd == bundle.pfa24cd[target_row]
-            peer_rows, distances = nearest(bundle.scaled, target_row, cols, n_peers, mask)
+            peer_rows, distances = nearest(bundle.scaled, target_row, cols, n_peers, mask, metric)
             if len(peer_rows):
-                peers = peer_frame(bundle, counts, names, target_row, peer_rows, distances, cols)
+                peers = peer_frame(bundle, counts, names, target_row, peer_rows, distances, cols, metric)
             else:
                 message = "No other cell in the force recorded this crime in the window."
 
@@ -585,7 +620,7 @@ def main() -> None:
     scope_force = None
     if scope == WITHIN_FORCE and peers is not None:
         scope_force = bundle.pfa24cd[bundle.rows_of([target])[0]]
-    cell_map(hotspots, target if peers is not None else None, peers, gaps, window, category, scope_force)
+    cell_map(hotspots, target if peers is not None else None, peers, gaps, window, category, digits, scope_force)
     hotspot_table(hotspots, table_key)
 
     if message is not None:
@@ -598,11 +633,11 @@ def main() -> None:
     st.markdown(f"### {target_info['description']} and its {len(peers)} nearest cells {where}")
     st.caption(
         f"Hotspot {target_info['rank']} · {target_info['n']:,} crimes · spatial_id {target} · "
-        f"distances over {len(cols)} of {len(bundle.columns)} feature columns · "
+        f"{metric} distances over {len(cols)} of {len(bundle.columns)} feature columns · "
         f"candidates are the {len(counts):,} cells with at least one {category.lower()} in the window"
     )
     with st.expander("Peer table", icon=":material/table:"):
-        peer_table(peers)
+        peer_table(peers, digits)
 
     st.markdown("#### Cells and profiles")
     st.caption(
@@ -618,7 +653,7 @@ def main() -> None:
             "subheading": [
                 f"hotspot {target_info['rank']} · {target_info['n']:,} crimes · {target_info['force']}",
                 *(
-                    f"distance {d:.2f} · rank {r:,} · {n:,} crimes · {f}"
+                    f"distance {d:.{digits}f} · rank {r:,} · {n:,} crimes · {f}"
                     for d, r, n, f in zip(
                         peers["distance"], peers["rank"], peers["crimes"], peers["force"], strict=True
                     )

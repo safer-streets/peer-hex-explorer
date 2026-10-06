@@ -64,3 +64,14 @@ def test_no_features_warns(at):
     select(at, 1)
     assert at.warning[0].value == "Select at least one feature."
     assert len(at.dataframe) == 1
+
+
+def test_cosine_peers(at):
+    # metric first: AppTest drops an injected table selection on any rerun, so it has to come last
+    at.button_group(key="metric").set_value("cosine")
+    select(at, 1)
+    assert not at.exception
+    cosine = at.dataframe[1].value
+    assert len(cosine) == 5
+    assert cosine["distance"].is_monotonic_increasing
+    assert cosine["distance"].between(0, 2).all()
