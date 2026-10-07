@@ -6,6 +6,28 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Building counts as features
+
+- **Why** — Requested: the Verisk building counts (`transform/beahiv202_building_counts`) as features.
+- **What**
+  - `data.py`: `CHARACTERISATION_QUERY` joins the building counts and adds `n_res_buildings` and
+    `n_nonres_buildings`, COALESCEd to 0 (no row means no building of that use).
+  - `features.py` (and eda's `hex_features.py`, in step): both columns in `LOG1P_COLUMNS` and `SHORT_LABELS`.
+  - `main.py`: More info lists them; `feature_groups` makes them one sidebar pill, "buildings", like land cover.
+    Tests: `test_buildings`; the notebook-parity check allows these two extra columns.
+- **Design decisions**
+  - **Mixed Use counts in both**, as in eda's `buildings.ipynb`: two features, not three.
+  - **One on/off pill for both.** They overlap (Mixed Use) and describe one building stock; the radars and
+    contributions still show them separately.
+  - **log1p, then the usual robust scale.** Over all E&W cells: residential median 55, max 895, 7% zero;
+    non-residential median 5, max 401, 12% zero. Fitted on the hotspot population, both IQRs are usable (divisors
+    1.13 and 1.46, no fallback).
+- **Follow-ups**
+  - `n_res_buildings` has Spearman 0.94 with `residential_population` (the population is assigned via buildings), so
+    the two together roughly double the weight on residents. Non-residential vs workers: 0.73.
+  - eda's `beahiv-characterisation.ipynb` and its parquet don't have the columns yet. The parity fixture doesn't
+    either, so `test_features.py` doesn't cover them.
+
 ## Cosine distance; consistent coverage notes
 
 - **Why** — Requested: a switch between Euclidean and cosine similarity. And the greyed-out force notes read
