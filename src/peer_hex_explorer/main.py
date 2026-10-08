@@ -37,6 +37,8 @@ NATIONAL, WITHIN_FORCE = "National", "Within force"
 METRICS: tuple[Metric, ...] = get_args(Metric)
 DISTANCE_DIGITS = {"euclidean": 2, "cosine": 3}  # cosine distances between close peers are a few hundredths
 LAND_COVER = "land cover"
+BUILDINGS = "buildings"
+BUILDING_COLUMNS = ("n_res_buildings", "n_nonres_buildings")
 
 CELL_COLOUR = "#356285"  # hex_features.CELL_COLOUR
 CELL_OUTLINE = "#1d3a52"
@@ -64,10 +66,16 @@ def _css_rgba(hex_colour: str, alpha: float) -> str:
 
 def feature_groups(columns: tuple[str, ...]) -> dict[str, list[int]]:
     """Sidebar option -> column indices. The two ILR coordinates are one option: switching off half of a
-    composition would leave a log-ratio whose meaning depends on the part that's gone."""
+    composition would leave a log-ratio whose meaning depends on the part that's gone. The two building counts are one
+    option too: Mixed Use buildings count in both, so they describe one building stock rather than two."""
     groups: dict[str, list[int]] = {}
     for i, c in enumerate(columns):
-        label = LAND_COVER if c.startswith("ilr_") else SHORT_LABELS.get(c, c)
+        if c.startswith("ilr_"):
+            label = LAND_COVER
+        elif c in BUILDING_COLUMNS:
+            label = BUILDINGS
+        else:
+            label = SHORT_LABELS.get(c, c)
         groups.setdefault(label, []).append(i)
     return groups
 
@@ -136,7 +144,7 @@ with the crime type and window, even though the distances don't. Under "Within f
 the force the selected hotspot lies in.
 
 **How "near" is measured.** Each cell is described by {len(bundle.columns)} features (road length, junctions, school
-catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
+catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, residential and non-residential buildings, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
 median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
 cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
 then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Scaling is per feature, so switching a
@@ -552,7 +560,8 @@ def main() -> None:
         default=list(groups),
         key="features",
         help="Distances are measured over the highlighted features. Land cover is the two log-ratio coordinates of "
-        "urban / suburban / greenspace share, taken together.",
+        "urban / suburban / greenspace share, taken together; buildings is the residential and non-residential "
+        "building counts, taken together.",
         width="stretch",
     )
 

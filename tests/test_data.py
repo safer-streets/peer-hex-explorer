@@ -71,7 +71,8 @@ def test_matches_notebook_parquet(raw):
     # of E&W. The values on the cells in both must still match exactly.
     assert len(common) / len(raw) > 0.99, (len(common), len(raw))
     features = [c for c in raw.columns if c != "pfa24cd"]
-    assert set(features) <= set(reference.columns)
+    # the building counts were added here before the notebook has them
+    assert set(features) - set(reference.columns) <= {"n_res_buildings", "n_nonres_buildings"}
     for c in set(features) & set(reference.columns):
         pd.testing.assert_series_equal(
             raw.loc[common, c], reference.loc[common, c].astype("float64"), check_names=False, rtol=1e-9
@@ -97,6 +98,25 @@ def test_shops(con, raw):
     in_matrix = np.isin(shop_cells, raw.index.to_numpy())
     assert in_matrix.sum() > 100_000  # i.e. the POI extract has been rerun with the shop categories
     assert shops.sum() == in_matrix.sum()
+
+
+def test_buildings(con, raw):
+    for c in ("n_res_buildings", "n_nonres_buildings"):
+        assert (raw[c] >= 0).all()  # and so no NaN: nothing is left for the median fill
+    totals = con.execute(
+        f"""
+        SELECT map_simple_use, SUM(building_count)
+        FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
+        WHERE spatial_id IN ?
+        GROUP BY map_simple_use
+        """,
+        (raw.index.tolist(),),
+    ).fetchall()
+    by_use = dict(totals)
+    assert set(by_use) == {"Residential", "Non Residential", "Mixed Use"}
+    # mixed use counts once in each
+    assert raw["n_res_buildings"].sum() == by_use["Residential"] + by_use["Mixed Use"]
+    assert raw["n_nonres_buildings"].sum() == by_use["Non Residential"] + by_use["Mixed Use"]
 
 
 def test_bundle(con):

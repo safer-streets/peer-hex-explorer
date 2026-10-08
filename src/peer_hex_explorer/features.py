@@ -33,6 +33,8 @@ LOG1P_COLUMNS = [
     "road_overlap_length",
     "residential_population",
     "workplace_population",
+    "n_res_buildings",
+    "n_nonres_buildings",
 ]
 
 # A column whose middle 50% is near-constant but whose tail is not has a tiny IQR, and dividing by
@@ -58,6 +60,8 @@ SHORT_LABELS = {
     "residential_population": "residents",
     "workplace_population": "workers",
     "n_shops": "shops",
+    "n_res_buildings": "res. buildings",
+    "n_nonres_buildings": "non-res. buildings",
     "ilr_urban_vs_suburban": "urban-suburban",
     "ilr_urban_suburban_vs_greenspace": "builtup-greenspace",
 }
