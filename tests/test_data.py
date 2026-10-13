@@ -71,9 +71,12 @@ def test_matches_notebook_parquet(raw):
     # of E&W. The values on the cells in both must still match exactly.
     assert len(common) / len(raw) > 0.99, (len(common), len(raw))
     features = [c for c in raw.columns if c != "pfa24cd"]
-    # the building counts were added here before the notebook has them
-    assert set(features) - set(reference.columns) <= {"n_res_buildings", "n_nonres_buildings"}
-    for c in set(features) & set(reference.columns):
+    # the building counts and station usage were added here before the notebook has them
+    assert set(features) - set(reference.columns) <= {"n_res_buildings", "n_nonres_buildings", "station_usage"}
+    # naptan was re-extracted without national rail stop types (station_usage covers those), after the notebook ran;
+    # dropping stops can only lower a count
+    assert (raw.loc[common, "n_stops"] <= reference.loc[common, "n_stops"]).all()
+    for c in set(features) & set(reference.columns) - {"n_stops"}:
         pd.testing.assert_series_equal(
             raw.loc[common, c], reference.loc[common, c].astype("float64"), check_names=False, rtol=1e-9
         )
@@ -117,6 +120,22 @@ def test_buildings(con, raw):
     # mixed use counts once in each
     assert raw["n_res_buildings"].sum() == by_use["Residential"] + by_use["Mixed Use"]
     assert raw["n_nonres_buildings"].sum() == by_use["Non Residential"] + by_use["Mixed Use"]
+
+
+def test_station_usage(con, raw):
+    usage = raw["station_usage"]
+    assert (usage >= 0).all()  # and so no NaN: nothing is left for the median fill
+    (expected,) = con.execute(
+        f"""
+        SELECT SUM(entries_exits)
+        FROM read_parquet('{SOURCE}/extract/station_usage.parquet')
+        WHERE beahiv202_id IN ?
+        """,
+        (raw.index.tolist(),),
+    ).fetchone()
+    assert usage.sum() == expected
+    # ~2.6k GB stations, about 2k of them in E&W cells: a sparse column, almost all zero
+    assert 1_500 < (usage > 0).sum() < 2_500
 
 
 def test_bundle(con):

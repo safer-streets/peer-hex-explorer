@@ -35,6 +35,7 @@ LOG1P_COLUMNS = [
     "workplace_population",
     "n_res_buildings",
     "n_nonres_buildings",
+    "station_usage",
 ]
 
 # A column whose middle 50% is near-constant but whose tail is not has a tiny IQR, and dividing by
@@ -62,6 +63,7 @@ SHORT_LABELS = {
     "n_shops": "shops",
     "n_res_buildings": "res. buildings",
     "n_nonres_buildings": "non-res. buildings",
+    "station_usage": "station usage",
     "ilr_urban_vs_suburban": "urban-suburban",
     "ilr_urban_suburban_vs_greenspace": "builtup-greenspace",
 }

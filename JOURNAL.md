@@ -6,6 +6,37 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Rail station usage as a feature
+
+- **Why** — Requested: rail station usage as a feature, log1p'd. It applies to ~2.5k cells.
+- **What**
+  - `data.py`: `CHARACTERISATION_QUERY` joins `extract/station_usage.parquet` (ORR Table 1410, from
+    safer-streets-tooling) and adds `station_usage`, the cell's annual entries + exits, COALESCEd to 0.
+  - `features.py` (and eda's `hex_features.py`, in step): in `LOG1P_COLUMNS`; short label "station usage". It gets
+    its own sidebar pill through `SHORT_LABELS`.
+  - `main.py`: More info lists it, and says what it does to distances (below). Tests: `test_station_usage`; the
+    notebook-parity check allows the extra column.
+- **Design decisions**
+  - **Summed per cell.** 8 cells hold two stations (e.g. City Thameslink + Blackfriars, the two Wigans). The three
+    stations closed all year have NULL counts; `SUM` skips them, so a cell with only a closed station is 0.
+  - **No station → 0, not imputed.** Absence of a station is a known zero, like the outlet counts.
+  - **Mainline only.** ORR covers National Rail; Underground/tram/metro stay in `n_stops` (`naptan` no longer
+    carries rail stop types, so the two don't double-count).
+  - **The standard pipeline, unchanged: log1p, then the hotspot-fitted robust scale.** 1,994 of 209k E&W cells have
+    a station, and 481 of the 13,163 hotspot-population cells (3.7%), so the population IQR is 0 and `robust_scale`'s
+    `"unit"` fallback leaves the column in raw log1p units. Station cells score 4.2–18.4 (median 12.6). Every other
+    feature sits in about ±3, so with this feature on, the station / no-station split dominates the ranking: in
+    practice a station hotspot's peers are station cells, ranked largely by footfall. Radars clip it at +3.
+- **Follow-ups**
+  - If that split is too strong, the options are a different divisor for this column alone (the population sd, 2.67,
+    puts station cells at 1.6–6.9) or a capped/binary encoding. Either is a fork from eda's `robust_scale` and needs
+    deciding there first.
+  - ORR's file is one financial year (2024-25); the tooling extract only takes the latest.
+  - Not in eda's `beahiv-characterisation.ipynb` or the parity fixture yet.
+  - `naptan` in the store no longer has rail stop types, so `n_stops` is lower than in eda's reference parquet on
+    1.1% of cells. `test_matches_notebook_parquet` now only checks it is never higher; restore the exact check once
+    eda's `beahiv202-characterisation.parquet` is regenerated.
+
 ## Building counts as features
 
 - **Why** — Requested: the Verisk building counts (`transform/beahiv202_building_counts`) as features.
