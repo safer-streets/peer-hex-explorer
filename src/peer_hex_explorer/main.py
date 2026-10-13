@@ -144,7 +144,8 @@ with the crime type and window, even though the distances don't. Under "Within f
 the force the selected hotspot lies in.
 
 **How "near" is measured.** Each cell is described by {len(bundle.columns)} features (road length, junctions, school
-catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, residential and non-residential buildings, and land cover as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
+catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, residential and non-residential buildings, rail station usage (ORR annual entries and exits), and land cover
+as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
 median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
 cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
 then applied to all {len(bundle.spatial_id):,} cells in England & Wales. Scaling is per feature, so switching a
@@ -163,7 +164,10 @@ Distance is measured over the selected features, one of two ways:
 Why hotspots and not every cell: most cells are rural or suburban, and 86-90% have no food, alcohol, takeaway or
 hospital at all. Fitted over every cell, those four have no spread to scale by, stay in raw log units, and end up
 carrying half the distance between two urban cells. Fitted over hotspots, every feature's spread is set by places like
-the ones being compared, so the weight is shared out much more evenly.
+the ones being compared, so the weight is shared out much more evenly. Station usage is the exception: only about 4%
+of hotspot cells have a mainline station, so it stays in raw log units even there, and a cell with a station is at
+least 4 (typically 12) from any cell without one on that feature alone. With it switched on, a hotspot with a station
+is matched to other station cells, and one without to cells without; switch it off to compare across the two.
 
 **Peer table.** "Differs most on" is each feature's share of that peer's squared distance to the target: the features
 where the match is weakest. Under cosine, it is the share of the squared difference between the two cells' profiles

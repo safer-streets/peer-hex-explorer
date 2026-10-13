@@ -121,6 +121,7 @@ SHOP_CATEGORIES = (
 #   beyond, so 31% of cells were median-filled to a typical distance when they are the furthest away. The geogs no
 #   longer carry it.
 # - n_res_buildings and n_nonres_buildings are added, from beahiv202_building_counts (not yet in the notebook)
+# - station_usage is added, from the ORR station usage extract (not yet in the notebook)
 # bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
 CHARACTERISATION_QUERY = f"""
 WITH bh_hosp_kring AS (
@@ -157,7 +158,8 @@ SELECT
     population.residential_population,
     population.workplace_population,
     COALESCE(buildings.n_res_buildings, 0) AS n_res_buildings,
-    COALESCE(buildings.n_nonres_buildings, 0) AS n_nonres_buildings
+    COALESCE(buildings.n_nonres_buildings, 0) AS n_nonres_buildings,
+    COALESCE(stations.station_usage, 0) AS station_usage
 FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet') hex
 LEFT JOIN (
     SELECT
@@ -202,6 +204,13 @@ LEFT JOIN (
     FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
     GROUP BY spatial_id
 ) buildings ON hex.spatial_id = buildings.spatial_id
+-- ORR annual passenger entries + exits, summed where a cell has two stations. No station means no rail footfall, so
+-- the NULL is a zero; the few stations closed all year have NULL counts, which SUM skips
+LEFT JOIN (
+    SELECT beahiv202_id AS spatial_id, SUM(entries_exits) AS station_usage
+    FROM read_parquet('{SOURCE}/extract/station_usage.parquet')
+    GROUP BY beahiv202_id
+) stations ON hex.spatial_id = stations.spatial_id
 WHERE hex.msoa21cd IS NOT NULL  -- NI has no MSOA codes
 ORDER BY hex.spatial_id
 """
