@@ -71,12 +71,16 @@ def test_matches_notebook_parquet(raw):
     # of E&W. The values on the cells in both must still match exactly.
     assert len(common) / len(raw) > 0.99, (len(common), len(raw))
     features = [c for c in raw.columns if c != "pfa24cd"]
-    # the building counts and station usage were added here before the notebook has them
-    assert set(features) - set(reference.columns) <= {"n_res_buildings", "n_nonres_buildings", "station_usage"}
+    # the building measures and station usage were added here before the notebook has them
+    assert set(features) - set(reference.columns) <= {"n_res_buildings", "nonres_floor_area", "station_usage"}
     # naptan was re-extracted without national rail stop types (station_usage covers those), after the notebook ran;
     # dropping stops can only lower a count
     assert (raw.loc[common, "n_stops"] <= reference.loc[common, "n_stops"]).all()
-    for c in set(features) & set(reference.columns) - {"n_stops"}:
+    # residents were reallocated one share per building (rather than by floor area) after the notebook ran, which moves
+    # most cells a little and the ordering hardly at all
+    residents = raw.loc[common, "residential_population"].rank()
+    assert residents.corr(reference.loc[common, "residential_population"].rank()) > 0.98
+    for c in set(features) & set(reference.columns) - {"n_stops", "residential_population"}:
         pd.testing.assert_series_equal(
             raw.loc[common, c], reference.loc[common, c].astype("float64"), check_names=False, rtol=1e-9
         )
@@ -104,22 +108,24 @@ def test_shops(con, raw):
 
 
 def test_buildings(con, raw):
-    for c in ("n_res_buildings", "n_nonres_buildings"):
+    for c in ("n_res_buildings", "nonres_floor_area"):
         assert (raw[c] >= 0).all()  # and so no NaN: nothing is left for the median fill
     totals = con.execute(
         f"""
-        SELECT map_simple_use, SUM(building_count)
+        SELECT map_simple_use, SUM(building_count), SUM(floor_area)
         FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
         WHERE spatial_id IN ?
         GROUP BY map_simple_use
         """,
         (raw.index.tolist(),),
     ).fetchall()
-    by_use = dict(totals)
-    assert set(by_use) == {"Residential", "Non Residential", "Mixed Use"}
-    # mixed use counts once in each
-    assert raw["n_res_buildings"].sum() == by_use["Residential"] + by_use["Mixed Use"]
-    assert raw["n_nonres_buildings"].sum() == by_use["Non Residential"] + by_use["Mixed Use"]
+    count = {use: n for use, n, _ in totals}
+    area = {use: a for use, _, a in totals}
+    assert set(count) == {"Residential", "Non Residential", "Mixed Use"}
+    # mixed use is in both: a whole building in the residential count, half its floor area (halved upstream) in the
+    # non-residential area
+    assert raw["n_res_buildings"].sum() == count["Residential"] + count["Mixed Use"]
+    assert raw["nonres_floor_area"].sum() == pytest.approx(area["Non Residential"] + area["Mixed Use"], rel=1e-9)
 
 
 def test_station_usage(con, raw):

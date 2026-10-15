@@ -6,6 +6,31 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Non-residential floor area in place of the building count
+
+- **Why** — safer-streets-tooling#29 adds `floor_area` to `beahiv202_building_counts` (a non-residential count treats a
+  kiosk and a shopping centre the same) and asks for `n_nonres_buildings` to become `SUM(floor_area)`. The same PR
+  allocates residents one share per building instead of by floor area, which changes `residential_population`.
+- **What**
+  - `data.py`: `CHARACTERISATION_QUERY` sums `floor_area` over Non Residential + Mixed Use as `nonres_floor_area` (m²),
+    replacing `n_nonres_buildings`. `n_res_buildings` stays a count.
+  - `features.py` (and eda's `hex_features.py`, in step): renamed in `LOG1P_COLUMNS`; short label "non-res. floor area".
+  - `main.py`: `BUILDING_COLUMNS`, More info and the Features help say floor area.
+  - `tests/test_data.py`: `test_buildings` checks the area sum. `test_matches_notebook_parquet` drops the exact check on
+    `residential_population` for a rank-correlation one (> 0.98; it is 0.989).
+- **Design decisions**
+  - **Renamed, not reused.** Floor area in a column called `n_nonres_buildings` would mislead anyone reading the radars
+    or eda's code.
+  - **Mixed Use is not halved here.** The tooling already halves its `floor_area`, so it adds half its area to the
+    non-residential side, and still counts as a whole building on the residential side.
+  - **Still one "buildings" pill, log1p then the usual robust scale.** Over E&W: median 929 m², max 2.6M m², 11.7%
+    zero. On the hotspot population the log1p IQR is 2.29 (sd 2.04), so no fallback.
+- **Follow-ups**
+  - Spearman with `workplace_population` is now 0.78 (the count's was 0.73); `n_res_buildings` with
+    `residential_population` is now 0.96 (was 0.94), since residents are now allocated per building.
+  - Restore the exact `residential_population` check once eda's `beahiv202-characterisation.parquet` is regenerated.
+  - eda's `buildings.ipynb` and `beahiv-characterisation.ipynb` still use the count, or nothing.
+
 ## Rail station usage as a feature
 
 - **Why** — Requested: rail station usage as a feature, log1p'd. It applies to ~2.5k cells.
