@@ -38,7 +38,7 @@ METRICS: tuple[Metric, ...] = get_args(Metric)
 DISTANCE_DIGITS = {"euclidean": 2, "cosine": 3}  # cosine distances between close peers are a few hundredths
 LAND_COVER = "land cover"
 BUILDINGS = "buildings"
-BUILDING_COLUMNS = ("n_res_buildings", "n_nonres_buildings")
+BUILDING_COLUMNS = ("n_res_buildings", "nonres_floor_area")
 
 CELL_COLOUR = "#356285"  # hex_features.CELL_COLOUR
 CELL_OUTLINE = "#1d3a52"
@@ -66,7 +66,7 @@ def _css_rgba(hex_colour: str, alpha: float) -> str:
 
 def feature_groups(columns: tuple[str, ...]) -> dict[str, list[int]]:
     """Sidebar option -> column indices. The two ILR coordinates are one option: switching off half of a
-    composition would leave a log-ratio whose meaning depends on the part that's gone. The two building counts are one
+    composition would leave a log-ratio whose meaning depends on the part that's gone. The two building measures are one
     option too: Mixed Use buildings count in both, so they describe one building stock rather than two."""
     groups: dict[str, list[int]] = {}
     for i, c in enumerate(columns):
@@ -144,7 +144,7 @@ with the crime type and window, even though the distances don't. Under "Within f
 the force the selected hotspot lies in.
 
 **How "near" is measured.** Each cell is described by {len(bundle.columns)} features (road length, junctions, school
-catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, residential and non-residential buildings, rail station usage (ORR annual entries and exits), and land cover
+catchment depth, food/alcohol/takeaway outlets, shops, hospitals, transit stops, residents, workers, residential buildings, non-residential floor area, rail station usage (ORR annual entries and exits), and land cover
 as two log-ratio coordinates). Skewed counts are log1p-transformed, then every feature is
 median-centred and IQR-scaled, fitted **once, over a fixed population of {bundle.in_population.sum():,} hotspot
 cells**: those among the fewest cells accounting for 25% of any one crime type's crime, over all months. The fit is
@@ -564,8 +564,8 @@ def main() -> None:
         default=list(groups),
         key="features",
         help="Distances are measured over the highlighted features. Land cover is the two log-ratio coordinates of "
-        "urban / suburban / greenspace share, taken together; buildings is the residential and non-residential "
-        "building counts, taken together.",
+        "urban / suburban / greenspace share, taken together; buildings is the residential building count and "
+        "non-residential floor area, taken together.",
         width="stretch",
     )
 

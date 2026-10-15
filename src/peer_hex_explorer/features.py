@@ -34,7 +34,7 @@ LOG1P_COLUMNS = [
     "residential_population",
     "workplace_population",
     "n_res_buildings",
-    "n_nonres_buildings",
+    "nonres_floor_area",
     "station_usage",
 ]
 
@@ -62,7 +62,7 @@ SHORT_LABELS = {
     "workplace_population": "workers",
     "n_shops": "shops",
     "n_res_buildings": "res. buildings",
-    "n_nonres_buildings": "non-res. buildings",
+    "nonres_floor_area": "non-res. floor area",
     "station_usage": "station usage",
     "ilr_urban_vs_suburban": "urban-suburban",
     "ilr_urban_suburban_vs_greenspace": "builtup-greenspace",

@@ -120,7 +120,7 @@ SHOP_CATEGORIES = (
 # - retail_centre_distance is replaced by n_shops, as in eda: the distance was only looked up within 2km and NULL
 #   beyond, so 31% of cells were median-filled to a typical distance when they are the furthest away. The geogs no
 #   longer carry it.
-# - n_res_buildings and n_nonres_buildings are added, from beahiv202_building_counts (not yet in the notebook)
+# - n_res_buildings and nonres_floor_area are added, from beahiv202_building_counts (not yet in the notebook)
 # - station_usage is added, from the ORR station usage extract (not yet in the notebook)
 # bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
 CHARACTERISATION_QUERY = f"""
@@ -158,7 +158,7 @@ SELECT
     population.residential_population,
     population.workplace_population,
     COALESCE(buildings.n_res_buildings, 0) AS n_res_buildings,
-    COALESCE(buildings.n_nonres_buildings, 0) AS n_nonres_buildings,
+    COALESCE(buildings.nonres_floor_area, 0) AS nonres_floor_area,
     COALESCE(stations.station_usage, 0) AS station_usage
 FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet') hex
 LEFT JOIN (
@@ -194,13 +194,14 @@ LEFT JOIN (
 ) schools ON hex.spatial_id = schools.spatial_id
 LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_road_intersection_counts.parquet') junctions ON hex.spatial_id = junctions.spatial_id
 LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_population_counts.parquet') population ON hex.spatial_id = population.spatial_id
--- Verisk footprints by centroid, one row per (cell, map_simple_use); a mixed-use building counts as one of each.
--- No row means no building of that use, so the NULL is a zero
+-- Verisk footprints by centroid, one row per (cell, map_simple_use). Residential is a count, a mixed-use building
+-- counting as one; non-residential is floor area (m²), since a kiosk and a shopping centre are one building each. The
+-- tooling already halves a mixed-use building's floor area. No row means no building of that use, so the NULL is a zero
 LEFT JOIN (
     SELECT
         spatial_id,
         SUM(building_count) FILTER (WHERE map_simple_use IN ('Residential', 'Mixed Use')) AS n_res_buildings,
-        SUM(building_count) FILTER (WHERE map_simple_use IN ('Non Residential', 'Mixed Use')) AS n_nonres_buildings
+        SUM(floor_area) FILTER (WHERE map_simple_use IN ('Non Residential', 'Mixed Use')) AS nonres_floor_area
     FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
     GROUP BY spatial_id
 ) buildings ON hex.spatial_id = buildings.spatial_id
