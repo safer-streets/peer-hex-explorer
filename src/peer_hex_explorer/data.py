@@ -22,7 +22,7 @@ from duckdb.func import PythonUDFType
 from duckdb.sqltypes import BIGINT, INTEGER
 from pyproj import Transformer
 
-from peer_hex_explorer.database import SOURCE, duckdb_connector
+from peer_hex_explorer.database import GRID, SOURCE, duckdb_connector
 from peer_hex_explorer.features import LOG1P_COLUMNS, clean_features, ilr_features, robust_scale
 from peer_hex_explorer.utils import CrimeType, Force, fix_force_name
 
@@ -120,7 +120,7 @@ SHOP_CATEGORIES = (
 # - retail_centre_distance is replaced by n_shops, as in eda: the distance was only looked up within 2km and NULL
 #   beyond, so 31% of cells were median-filled to a typical distance when they are the furthest away. The geogs no
 #   longer carry it.
-# - n_res_buildings and nonres_floor_area are added, from beahiv202_building_counts (not yet in the notebook)
+# - n_res_buildings and nonres_floor_area are added, from the grid's building counts (not yet in the notebook)
 # - station_usage is added, from the ORR station usage extract (not yet in the notebook)
 # bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
 CHARACTERISATION_QUERY = f"""
@@ -131,12 +131,12 @@ WITH bh_hosp_kring AS (
     -- nearby are simply absent, hence the COALESCE below.
     -- note that "hospital" includes various clinics, so places like Harley St have an extremely high count
     WITH hosp AS (
-        SELECT beahiv202_id
+        SELECT {GRID}_id
         FROM read_parquet('{SOURCE}/extract/poi.parquet')
         WHERE basic_category IN ('hospital', 'emergency_department')
     )
     SELECT ring.cell_id AS spatial_id, COUNT(*) AS n_hospital
-    FROM hosp, UNNEST(beahiv_k_ring(hosp.beahiv202_id, 1)) AS ring(cell_id)
+    FROM hosp, UNNEST(beahiv_k_ring(hosp.{GRID}_id, 1)) AS ring(cell_id)
     GROUP BY ring.cell_id
 )
 SELECT
@@ -160,15 +160,15 @@ SELECT
     COALESCE(buildings.n_res_buildings, 0) AS n_res_buildings,
     COALESCE(buildings.nonres_floor_area, 0) AS nonres_floor_area,
     COALESCE(stations.station_usage, 0) AS station_usage
-FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet') hex
+FROM read_parquet('{SOURCE}/transform/{GRID}_geogs.parquet') hex
 LEFT JOIN (
     SELECT
-        poi.beahiv202_id AS spatial_id,
+        poi.{GRID}_id AS spatial_id,
         COUNT(*) FILTER (WHERE basic_category IN ('bar', 'alcoholic_beverage_venue', 'lounge', 'inn')) AS n_alcohol,
         COUNT(*) FILTER (WHERE basic_category IN ('casual_eatery', 'fast_food_restaurant', 'food_service')) AS n_food, -- removed 'restaurant'
         COUNT(*) FILTER (WHERE basic_category IN {SHOP_CATEGORIES}) AS n_shops,
     FROM read_parquet('{SOURCE}/extract/poi.parquet') poi
-    GROUP BY poi.beahiv202_id
+    GROUP BY poi.{GRID}_id
 ) poi ON hex.spatial_id = poi.spatial_id
 -- With H3 hexes hospitals were counted in the PARENT cell, so siblings sharing a parent were
 -- captured too. These hexes have no parent, so bh_hosp_kring counts hospital POI in the cell's
@@ -177,23 +177,23 @@ LEFT JOIN (
 LEFT JOIN bh_hosp_kring hosp ON hex.spatial_id = hosp.spatial_id
 -- naptan public transport stops per hex
 LEFT JOIN (
-    SELECT beahiv202_id AS spatial_id, COUNT(*) AS n_stops
+    SELECT {GRID}_id AS spatial_id, COUNT(*) AS n_stops
     FROM read_parquet('{SOURCE}/extract/naptan.parquet')
-    GROUP BY beahiv202_id
+    GROUP BY {GRID}_id
 ) naptan ON hex.spatial_id = naptan.spatial_id
 LEFT JOIN (
-    SELECT beahiv202_id AS spatial_id, COUNT(*) AS n_takeaways
+    SELECT {GRID}_id AS spatial_id, COUNT(*) AS n_takeaways
     FROM read_parquet('{SOURCE}/extract/food_outlets.parquet')
     WHERE business_type = 'Takeaway/sandwich shop'
-    GROUP BY beahiv202_id
+    GROUP BY {GRID}_id
 ) food_outlets ON hex.spatial_id = food_outlets.spatial_id
 LEFT JOIN (
     SELECT spatial_id, SUM(overlap_area) AS sum_overlap_area
-    FROM read_parquet('{SOURCE}/transform/beahiv202_schools_lookup.parquet')
+    FROM read_parquet('{SOURCE}/transform/{GRID}_schools_lookup.parquet')
     GROUP BY spatial_id
 ) schools ON hex.spatial_id = schools.spatial_id
-LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_road_intersection_counts.parquet') junctions ON hex.spatial_id = junctions.spatial_id
-LEFT JOIN read_parquet('{SOURCE}/transform/beahiv202_population_counts.parquet') population ON hex.spatial_id = population.spatial_id
+LEFT JOIN read_parquet('{SOURCE}/transform/{GRID}_road_intersection_counts.parquet') junctions ON hex.spatial_id = junctions.spatial_id
+LEFT JOIN read_parquet('{SOURCE}/transform/{GRID}_population_counts.parquet') population ON hex.spatial_id = population.spatial_id
 -- Verisk footprints by centroid, one row per (cell, map_simple_use). Residential is a count, a mixed-use building
 -- counting as one; non-residential is floor area (m²), since a kiosk and a shopping centre are one building each. The
 -- tooling already halves a mixed-use building's floor area. No row means no building of that use, so the NULL is a zero
@@ -202,15 +202,15 @@ LEFT JOIN (
         spatial_id,
         SUM(building_count) FILTER (WHERE map_simple_use IN ('Residential', 'Mixed Use')) AS n_res_buildings,
         SUM(floor_area) FILTER (WHERE map_simple_use IN ('Non Residential', 'Mixed Use')) AS nonres_floor_area
-    FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
+    FROM read_parquet('{SOURCE}/transform/{GRID}_building_counts.parquet')
     GROUP BY spatial_id
 ) buildings ON hex.spatial_id = buildings.spatial_id
 -- ORR annual passenger entries + exits, summed where a cell has two stations. No station means no rail footfall, so
 -- the NULL is a zero; the few stations closed all year have NULL counts, which SUM skips
 LEFT JOIN (
-    SELECT beahiv202_id AS spatial_id, SUM(entries_exits) AS station_usage
+    SELECT {GRID}_id AS spatial_id, SUM(entries_exits) AS station_usage
     FROM read_parquet('{SOURCE}/extract/station_usage.parquet')
-    GROUP BY beahiv202_id
+    GROUP BY {GRID}_id
 ) stations ON hex.spatial_id = stations.spatial_id
 WHERE hex.msoa21cd IS NOT NULL  -- NI has no MSOA codes
 ORDER BY hex.spatial_id
@@ -233,10 +233,10 @@ def query_hotspot_population(con: duckdb.DuckDBPyConnection) -> np.ndarray:
         f"""
         WITH counts AS (
             SELECT crime.crime_type, crime.spatial_id, SUM(crime.count) AS n
-            FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') crime
+            FROM read_parquet('{SOURCE}/transform/{GRID}_crime_counts.parquet') crime
             SEMI JOIN (
                 SELECT spatial_id
-                FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet')
+                FROM read_parquet('{SOURCE}/transform/{GRID}_geogs.parquet')
                 WHERE msoa21cd IS NOT NULL  -- NI has no MSOA codes
             ) ew ON crime.spatial_id = ew.spatial_id
             WHERE crime.crime_type IN ?
@@ -345,7 +345,7 @@ def characterisation() -> Characterisation:
 def all_months() -> tuple[str, ...]:
     raw = (
         get_con()
-        .sql(f"SELECT DISTINCT month FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') ORDER BY 1")
+        .sql(f"SELECT DISTINCT month FROM read_parquet('{SOURCE}/transform/{GRID}_crime_counts.parquet') ORDER BY 1")
         .fetchall()
     )
     return tuple(m[0] for m in raw)
@@ -366,10 +366,10 @@ def query_crime_counts(con: duckdb.DuckDBPyConnection, crime_type: CrimeType, mo
         con.sql(
             f"""
             SELECT crime.spatial_id, ANY_VALUE(ew.pfa24cd) AS pfa24cd, SUM(crime.count)::BIGINT AS n
-            FROM read_parquet('{SOURCE}/transform/beahiv202_crime_counts.parquet') crime
+            FROM read_parquet('{SOURCE}/transform/{GRID}_crime_counts.parquet') crime
             JOIN (
                 SELECT spatial_id, pfa24cd
-                FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet')
+                FROM read_parquet('{SOURCE}/transform/{GRID}_geogs.parquet')
                 WHERE msoa21cd IS NOT NULL  -- NI has no MSOA codes
             ) ew ON crime.spatial_id = ew.spatial_id
             WHERE crime.crime_type = ? AND crime.month IN ?
@@ -446,7 +446,7 @@ FORCE_TOLERANCE_M = 50
 def force_outlines() -> dict[str, list[list[list[list[float]]]]]:
     """pfa24cd -> the force area as pydeck polygons, each [exterior, *holes] with rings of [lon, lat].
 
-    Simplified to within FORCE_TOLERANCE_M of the true line: a quarter of a cell's 202m side, so at worst a border
+    Simplified to within FORCE_TOLERANCE_M of the true line: a quarter of a cell's ~202m side, so at worst a border
     cell straddles the "within force" outline rather than sitting clearly on the wrong side of it, while cutting 4.1M
     vertices to ~50k (the largest force ~5k, ~110 KB of JSON per rerun). Each force is simplified on its own, so
     neighbours' shared edges can differ by up to twice that.
@@ -477,7 +477,7 @@ def descriptions(ids: tuple[int, ...]) -> pd.Series:
         .sql(
             f"""
             SELECT spatial_id, description
-            FROM read_parquet('{SOURCE}/transform/beahiv202_descriptions.parquet')
+            FROM read_parquet('{SOURCE}/transform/{GRID}_descriptions.parquet')
             WHERE spatial_id IN ?
             """,
             params=(list(ids),),

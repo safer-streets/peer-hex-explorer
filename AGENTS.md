@@ -4,7 +4,8 @@ This file instructs AI agents acting as developer, reviewer, and QA for this rep
 
 ## Project Overview
 
-A Streamlit app: pick a crime hotspot on the [BEAHIV](https://github.com/safer-streets/beahiv) 202m grid, see the
+A Streamlit app: pick a crime hotspot on the [BEAHIV](https://github.com/safer-streets/beahiv) 350m edge-to-edge grid
+(tooling's key `bh350eef`, `database.GRID`), see the
 cells that most resemble it in feature space. It is the workflow of safer-streets-eda's `ho_top_kc.py` (which made one
 PDF page per Home Office knife-crime hotspot) made interactive, on the BEAHIV grid with public police.uk crime counts.
 [PLAN.md](PLAN.md) is the original design; [JOURNAL.md](JOURNAL.md) records where the build departed from it and why.
@@ -85,8 +86,11 @@ network, so a one-off failure there is worth a rerun before debugging.
 - **No per-panel WebGL.** The overview is the only pydeck map. Panel maps are server-side images from
   [basemap.py](src/peer_hex_explorer/basemap.py), because browsers cap WebGL contexts at ~16 per page. Keep tile use
   polite (identifying User-Agent, cached, ≤2 connections); OSM's tile policy does not cover heavy traffic.
-- **pydeck tooltips escape field values.** Markup goes in the tooltip *template*, never in the data. 19-digit
-  `spatial_id`s exceed a JS number's precision, so they only reach the browser as strings.
+- **pydeck tooltips escape field values.** Markup goes in the tooltip *template*, never in the data. `spatial_id`s
+  reach the browser as strings. Since beahiv 0.1.0 they are below 2**52 and would survive as JS numbers, but a string
+  can't pick up thousands separators or float formatting on the way.
+- **The grid is one constant.** Every grid table and `*_id` column name is built from `database.GRID`. Don't spell
+  out `bh350eef` anywhere else: a resize in tooling renames the tables, and then only `GRID` should need to change.
 - **Light theme only** ([.streamlit/config.toml](.streamlit/config.toml)): the OSM panels and radar colours assume it.
 - **No comments explaining *what* the code does.** Only the *why*, when it's non-obvious. Match the existing style.
 

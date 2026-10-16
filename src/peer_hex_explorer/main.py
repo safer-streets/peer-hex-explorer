@@ -2,7 +2,7 @@
 Pick a crime hotspot, find the cells that most resemble it in feature space.
 
 Standalone (no safer-streets-core dependency), no API: DuckDB reads the Azure parquet store directly. The workflow is
-safer-streets-eda's ho_top_kc.py on the BEAHIV 202m grid with public police.uk crime counts.
+safer-streets-eda's ho_top_kc.py on the BEAHIV 350m (edge-to-edge) grid with public police.uk crime counts.
 """
 
 from pathlib import Path
@@ -131,7 +131,7 @@ def more_info(bundle: Characterisation) -> None:
     st.markdown(
         f"""
 Uses [police.uk](https://data.police.uk) public crime data, counted on the
-[BEAHIV](https://github.com/safer-streets/beahiv) 202m-side equal-area hexagonal grid. Cells are equal-area, so ranking
+[BEAHIV](https://github.com/safer-streets/beahiv) equal-area hexagonal grid, cells 350m edge-to-edge (~0.106km²). Cells are equal-area, so ranking
 by count is ranking by density.
 
 1. Pick a crime type and time window: the table lists the top hotspot cells in England & Wales.
