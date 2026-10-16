@@ -6,6 +6,41 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## Switch the grid from `beahiv202` to `bh350eef`; beahiv 0.1.0
+
+- **Why** — Requested. safer-streets-tooling moved the BEAHIV grid to 350m edge-to-edge, flat (`bh350eef`) on beahiv
+  0.1.0, which also moved the grid origin and the id layout: `beahiv202` ids no longer decode.
+- **What**
+  - `database.py`: `GRID = "bh350eef"`. `data.py` and `tests/test_data.py` build every grid table name
+    (`{GRID}_geogs`, `_crime_counts`, `_descriptions`, `_schools_lookup`, `_road_intersection_counts`,
+    `_population_counts`, `_building_counts`) and the extracts' `{GRID}_id` column from it.
+  - `pyproject.toml` / `uv.lock`: `beahiv[arrow]>=0.1.0`, pinned to commit `aab3a14` on beahiv's main. The `v0.1.0`
+    tag isn't on GitHub yet.
+  - `tests/test_data.py`: `test_hotspot_ids_decode` asserts size 350, `EDGE_TO_EDGE`, `FLAT` (was `side_length` 202).
+    The reference parquet now defaults to eda's `bh350eef-characterisation.parquet`.
+  - More info, README, `main.py`'s docstring and AGENTS.md describe the grid as 350m edge-to-edge. AGENTS.md's
+    tooltip rule no longer claims ids exceed JS precision (they are now below 2**52).
+- **Design decisions**
+  - **One `GRID` constant, not a find-and-replace.** Tooling derives its key from the grid parameters, so the next
+    resize renames every table again. It is still a fixed string in code, so the "names only from fixed strings" rule
+    holds.
+  - **The cells barely change.** A side of 350/√3 ≈ 202.07m against 202m (+0.07% area). The panel zoom, the force
+    outline tolerance and the k-ring hospital catchment stay as they are. 221,319 cells against 221,453; the hotspot
+    population is 13,118 cells.
+  - **Ids still reach the browser as strings.** It is no longer needed for precision, but it is harmless and keeps
+    the tables free of number formatting.
+- **Follow-ups**
+  - **The app doesn't build yet.** On `az://phase2` (2026-10-16) the published tables are `bh350eef_crime_counts`,
+    `_geogs`, `_descriptions`, `_greenspace_lookup` and `_road_intersection_counts`. `_population_counts`,
+    `_building_counts` and `_schools_lookup` are missing, and `poi`, `naptan`, `food_outlets` and `station_usage`
+    still carry only `beahiv202_id`. Tooling's `data extract --all` and the BEAHIV transform need re-running and
+    publishing. Until then the characterisation tests and `test_app.py` error. The crime-count, coverage and
+    decode tests pass.
+  - Switch the beahiv source to `tag = "v0.1.0"` once the tag is pushed.
+  - eda's characterisation parquet needs regenerating on `bh350eef`. `test_matches_notebook_parquet` skips until then.
+  - The parity fixture (`tests/fixtures`) is a sample of the old `beahiv202` matrix. It tests the feature pipeline,
+    not the grid, so it stays valid. Regenerate it whenever eda's pipeline next changes.
+
 ## Non-residential floor area in place of the building count
 
 - **Why** — safer-streets-tooling#29 adds `floor_area` to `beahiv202_building_counts` (a non-residential count treats a

@@ -24,13 +24,13 @@ from peer_hex_explorer.data import (
     query_crime_counts,
     query_hotspot_population,
 )
-from peer_hex_explorer.database import SOURCE, duckdb_connector
+from peer_hex_explorer.database import GRID, SOURCE, duckdb_connector
 from peer_hex_explorer.utils import Force
 
 ROOT = Path(__file__).parents[1]
 REFERENCE = Path(
     os.environ.get(
-        "BEAHIV_CHARACTERISATION_PARQUET", ROOT.parent / "safer-streets-eda" / "beahiv202-characterisation.parquet"
+        "BEAHIV_CHARACTERISATION_PARQUET", ROOT.parent / "safer-streets-eda" / f"{GRID}-characterisation.parquet"
     )
 )
 
@@ -88,7 +88,7 @@ def test_matches_notebook_parquet(raw):
 
 def test_no_northern_ireland(con, raw):
     ni = con.sql(
-        f"SELECT spatial_id FROM read_parquet('{SOURCE}/transform/beahiv202_geogs.parquet') WHERE msoa21cd IS NULL"
+        f"SELECT spatial_id FROM read_parquet('{SOURCE}/transform/{GRID}_geogs.parquet') WHERE msoa21cd IS NULL"
     ).fetchnumpy()["spatial_id"]
     assert len(ni) > 10_000  # i.e. the filter really is removing NI, not nothing
     assert not np.isin(raw.index.to_numpy(), ni).any()
@@ -98,9 +98,9 @@ def test_shops(con, raw):
     shops = raw["n_shops"]
     assert (shops >= 0).all()  # and so no NaN: nothing is left for the median fill
     shop_cells = con.execute(
-        f"SELECT beahiv202_id FROM read_parquet('{SOURCE}/extract/poi.parquet') WHERE basic_category IN ?",
+        f"SELECT {GRID}_id FROM read_parquet('{SOURCE}/extract/poi.parquet') WHERE basic_category IN ?",
         (list(SHOP_CATEGORIES),),
-    ).fetchnumpy()["beahiv202_id"]
+    ).fetchnumpy()[f"{GRID}_id"]
     # the extract's bbox reaches into Scotland, so only shops in an E&W cell are expected in the counts
     in_matrix = np.isin(shop_cells, raw.index.to_numpy())
     assert in_matrix.sum() > 100_000  # i.e. the POI extract has been rerun with the shop categories
@@ -113,7 +113,7 @@ def test_buildings(con, raw):
     totals = con.execute(
         f"""
         SELECT map_simple_use, SUM(building_count), SUM(floor_area)
-        FROM read_parquet('{SOURCE}/transform/beahiv202_building_counts.parquet')
+        FROM read_parquet('{SOURCE}/transform/{GRID}_building_counts.parquet')
         WHERE spatial_id IN ?
         GROUP BY map_simple_use
         """,
@@ -135,7 +135,7 @@ def test_station_usage(con, raw):
         f"""
         SELECT SUM(entries_exits)
         FROM read_parquet('{SOURCE}/extract/station_usage.parquet')
-        WHERE beahiv202_id IN ?
+        WHERE {GRID}_id IN ?
         """,
         (raw.index.tolist(),),
     ).fetchone()
@@ -160,7 +160,10 @@ def test_hotspot_ids_decode(con):
     counts = query_crime_counts(con.cursor(), "Robbery", ["2026-05", "2026-06", "2026-07"])
     assert len(counts) > 0
     assert counts.national_rank.tolist() == list(range(1, len(counts) + 1))
-    assert {beahiv.decode(int(i)).side_length for i in counts.index} == {202}
+    cells = {beahiv.decode(int(i)) for i in counts.index}
+    assert {(c.size, c.measure, c.orientation) for c in cells} == {
+        (350, beahiv.Measure.EDGE_TO_EDGE, beahiv.Orientation.FLAT)
+    }
 
 
 def test_coverage_resolves_every_force(con):

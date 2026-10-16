@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -47,8 +47,8 @@ wheels = [
 
 [[package]]
 name = "beahiv"
-version = "0.0.2"
-source = { git = "https://github.com/safer-streets/beahiv?tag=v0.0.2#b464b3648a3685f17c46ed5145b69606dca7fd49" }
+version = "0.1.0"
+source = { git = "https://github.com/safer-streets/beahiv?rev=aab3a14c4189d188a39e49d0bf0fbb87757b539c#aab3a14c4189d188a39e49d0bf0fbb87757b539c" }
 dependencies = [
     { name = "numpy" },
     { name = "pyproj" },
@@ -511,7 +511,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "beahiv", extras = ["arrow"], git = "https://github.com/safer-streets/beahiv?tag=v0.0.2" },
+    { name = "beahiv", extras = ["arrow"], git = "https://github.com/safer-streets/beahiv?rev=aab3a14c4189d188a39e49d0bf0fbb87757b539c" },
     { name = "duckdb", specifier = ">=1.5.4" },
     { name = "numpy", specifier = ">=2.5" },
     { name = "pandas", specifier = ">=3.0" },

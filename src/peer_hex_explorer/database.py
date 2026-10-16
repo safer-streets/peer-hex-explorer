@@ -3,6 +3,10 @@ import duckdb
 # Every dataset lives here; there is deliberately no local-data switch (see data.py)
 SOURCE = "az://phase2"
 
+# safer-streets-tooling's key for the BEAHIV grid (350m edge-to-edge, flat): it names every table on the grid and the
+# `{GRID}_id` column on the point extracts. Tooling derives it from the grid parameters, so a resize renames it.
+GRID = "bh350eef"
+
 
 def _load_extensions(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("""
