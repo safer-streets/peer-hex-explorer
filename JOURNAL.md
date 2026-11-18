@@ -6,6 +6,42 @@ decisions**, and **Follow-ups** — see [Task & Design Summaries](AGENTS.md#task
 
 <!-- New entries go directly below this line. -->
 
+## POI counts on tooling's OSM categories
+
+**Why**
+- tooling replaced Overture places with OSM nodes in `extract/poi.parquet` (tooling #34): `basic_category` became
+  `category`, with 12 coarse values (`shop`, `food`, `alcohol`, `hospital`, ...). The column was renamed here but the
+  values weren't, so only `market` still matched: `n_alcohol` and `n_food` were zero in every cell, `n_shops` counted
+  302 marketplaces, and `test_shops` failed.
+
+**What**
+- `data.py`: `SHOP_CATEGORIES` → `POI_CATEGORIES` (feature → categories: `n_alcohol` `alcohol`, `n_food` `food`,
+  `n_shops` `shop` + `market`), which generates the `COUNT(*) FILTER` clauses. `n_hospital` filters
+  `category = 'hospital'` (`emergency_department` is gone).
+- `test_data.py`: `test_shops` → `test_poi_counts`, parametrised over the three counts, plus
+  `test_poi_categories_exist` so a renamed category fails loudly instead of zeroing a feature.
+  `test_matches_notebook_parquet` exempts the four POI columns (Overture there, OSM here) and checks
+  `workplace_population` only rises (tooling placed workers in residential-only OAs after the notebook ran); it was
+  already failing on both.
+- More info: the shops caveat now covers every OSM count; zero shares updated (90-99%).
+
+**Design decisions**
+- A deliberate fork from eda, which still reads `basic_category` (`hex_features.SHOP_CATEGORIES`,
+  `generate_hotspots.py`, the notebooks) and so can't run against the store. `features.py` is untouched: the category
+  lists live in `data.py`.
+- `market` stays in `n_shops`, as it was among Overture's shop categories; tooling's suggested mapping is `shop` alone.
+  302 rows, so either way.
+
+**Follow-ups**
+- **Nodes undercount.** `poi` is nodes only; venues drawn as a building or site are in `extract/osm_buildings` /
+  `osm_landuse` (no grid id). Nationally, as polygons: ~22k pubs/bars/nightclubs (17.5k nodes in E&W cells), ~14k
+  fast food, ~11k cafes, ~1.4k hospitals (225 nodes). `n_hospital` is now nonzero in 0.4% of cells; it was ~11%.
+  Counting the polygons needs a cell per polygon and a node/polygon dedup rule: better done once in tooling for both
+  consumers.
+- Scales moved (alcohol 56k → 17.5k, shops 396k → 144k in common cells): the hotspot-population IQRs and every
+  distance change with them.
+- `features.py`'s docstring still quotes Overture-era zero shares (87-91%); it changes with eda.
+
 ## Switch the grid from `beahiv202` to `bh350eef`; beahiv 0.1.0
 
 - **Why** — Requested. safer-streets-tooling moved the BEAHIV grid to 350m edge-to-edge, flat (`bh350eef`) on beahiv

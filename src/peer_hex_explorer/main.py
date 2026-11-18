@@ -161,7 +161,7 @@ Distance is measured over the selected features, one of two ways:
   and is never a cosine peer. With few features selected, many cells share a direction and the ranking is mostly
   ties.
 
-Why hotspots and not every cell: most cells are rural or suburban, and 86-90% have no food, alcohol, takeaway or
+Why hotspots and not every cell: most cells are rural or suburban, and 90-99% have no food, alcohol, takeaway or
 hospital at all. Fitted over every cell, those four have no spread to scale by, stay in raw log units, and end up
 carrying half the distance between two urban cells. Fitted over hotspots, every feature's spread is set by places like
 the ones being compared, so the weight is shared out much more evenly. Station usage is the exception: only about 4%
@@ -182,8 +182,9 @@ way from the ring: most hotspots have no pub, takeaway or hospital, so having no
 
 **Caveats.**
 - Median-imputed values: {imputed}. These cells read as typical on that feature, whatever they really are.
-- Shops are Overture Maps places in any shop category (every kind of store, markets, kiosks, shopping centres), so
-  they are only as complete as Overture is.
+- Shops, food and alcohol outlets and hospitals are OpenStreetMap points (shops: any shop, pharmacies and
+  marketplaces; food: cafes and fast food, not restaurants; alcohol: pubs, bars and nightclubs), so they are only as
+  complete as OSM is. A venue mapped only as a building outline, not a point, isn't counted.
 - Northern Ireland is excluded throughout: police.uk publishes its crime, but it has no matching geography or features.
 - Each cell belongs to one force (by greatest overlap), which is what "within force" uses.
 - Some forces publish nothing to police.uk (Greater Manchester, since 2019), and others miss months. The map greys

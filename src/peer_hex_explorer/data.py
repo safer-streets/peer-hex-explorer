@@ -76,64 +76,42 @@ def _register_k_ring(con: duckdb.DuckDBPyConnection) -> None:
         con.create_function("beahiv_k_ring", _k_ring, [BIGINT, INTEGER], list_type(BIGINT), type=PythonUDFType.ARROW)
 
 
-# Overture basic categories counted as shops: safer-streets-tooling's POI config `shop_categories`, as eda's
-# hex_features.SHOP_CATEGORIES (every *_store, plus shopping, shopping_mall, superstore, market, farmers_market and
-# kiosk; not coffee_shop, which is catering)
-SHOP_CATEGORIES = (
-    "animal_and_pet_store",
-    "arts_crafts_and_hobby_store",
-    "books_music_and_video_store",
-    "convenience_store",
-    "department_store",
-    "discount_store",
-    "electronics_store",
-    "farmers_market",
-    "fashion_and_apparel_store",
-    "flowers_and_gifts_store",
-    "food_and_beverage_store",
-    "hardware_home_and_garden_store",
-    "kiosk",
-    "market",
-    "musical_instrument_and_pro_audio_store",
-    "office_supply_store",
-    "personal_care_and_beauty_store",
-    "pharmacy_and_drug_store",
-    "second_hand_store",
-    "shopping",
-    "shopping_mall",
-    "specialty_store",
-    "sporting_goods_store",
-    "superstore",
-    "toys_and_games_store",
-    "vehicle_parts_store",
-    "warehouse_club_store",
+# The POI extract's categories (OSM nodes: safer-streets-tooling's extract.poi.CATEGORIES) behind each count. They are
+# coarse, and each tag lands in exactly one, so the counts can't overlap. restaurant stays out of food, as it did with
+# Overture's categories; shop takes every shop=* (pharmacies too) and marketplaces.
+POI_CATEGORIES = {
+    "n_alcohol": ("alcohol",),
+    "n_food": ("food",),
+    "n_shops": ("shop", "market"),
+}
+_POI_COUNTS = ",\n        ".join(
+    f"COUNT(*) FILTER (WHERE category IN ({', '.join(f"'{c}'" for c in categories)})) AS {column}"
+    for column, categories in POI_CATEGORIES.items()
 )
 
 # beahiv-characterisation.ipynb's query, minus the IMD columns, oa21cd and lsoa21cd (context, not
-# features: hex_features.NON_FEATURE_COLUMNS) and with these changes:
+# features: hex_features.NON_FEATURE_COLUMNS), plus pfa24cd as context (one per cell: max overlap) for the
+# within-force scope. The feature columns are otherwise the notebook's, value for value. Notes on choices both share:
 # - n_stops is COALESCEd: a NULL there is a structural zero (see features.clean_features), so it is
 #   fixed at source rather than downstream
 # - Northern Ireland is excluded. The BEAHIV grid covers it, but NI matches no E&W boundary so every
-#   geography column is NULL (12,136 cells, all with msoa21cd, lsoa21cd and pfa24cd NULL together).
+#   geography column is NULL (all with msoa21cd, lsoa21cd and pfa24cd NULL together).
 #   It has to go *before* scaling, or NI cells move every median and IQR.
-# - pfa24cd comes along as context (one per cell: max overlap) for the within-force scope
 # - retail_centre_distance is replaced by n_shops, as in eda: the distance was only looked up within 2km and NULL
 #   beyond, so 31% of cells were median-filled to a typical distance when they are the furthest away. The geogs no
 #   longer carry it.
-# - n_res_buildings and nonres_floor_area are added, from the grid's building counts (not yet in the notebook)
-# - station_usage is added, from the ORR station usage extract (not yet in the notebook)
 # bh_hosp_kring is a CTE here rather than the notebook's view, so the build leaves no catalog state.
 CHARACTERISATION_QUERY = f"""
 WITH bh_hosp_kring AS (
-    -- Expand the ~8.6k hospital POI over their rings rather than expanding the hexes over theirs:
+    -- Expand the few hundred hospital POI over their rings rather than expanding the hexes over theirs:
     -- hex distance is symmetric, so "hospitals in this cell's k-ring" is the same count either way,
     -- and this one unnests thousands of rows instead of hundreds of thousands. Cells with no hospital
     -- nearby are simply absent, hence the COALESCE below.
-    -- note that "hospital" includes various clinics, so places like Harley St have an extremely high count
+    -- OSM nodes only: most hospitals are mapped as their site polygon, so this undercounts (see JOURNAL.md)
     WITH hosp AS (
         SELECT {GRID}_id
         FROM read_parquet('{SOURCE}/extract/poi.parquet')
-        WHERE basic_category IN ('hospital', 'emergency_department')
+        WHERE category = 'hospital'
     )
     SELECT ring.cell_id AS spatial_id, COUNT(*) AS n_hospital
     FROM hosp, UNNEST(beahiv_k_ring(hosp.{GRID}_id, 1)) AS ring(cell_id)
@@ -164,9 +142,7 @@ FROM read_parquet('{SOURCE}/transform/{GRID}_geogs.parquet') hex
 LEFT JOIN (
     SELECT
         poi.{GRID}_id AS spatial_id,
-        COUNT(*) FILTER (WHERE basic_category IN ('bar', 'alcoholic_beverage_venue', 'lounge', 'inn')) AS n_alcohol,
-        COUNT(*) FILTER (WHERE basic_category IN ('casual_eatery', 'fast_food_restaurant', 'food_service')) AS n_food, -- removed 'restaurant'
-        COUNT(*) FILTER (WHERE basic_category IN {SHOP_CATEGORIES}) AS n_shops,
+        {_POI_COUNTS},
     FROM read_parquet('{SOURCE}/extract/poi.parquet') poi
     GROUP BY poi.{GRID}_id
 ) poi ON hex.spatial_id = poi.spatial_id

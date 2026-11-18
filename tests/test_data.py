@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from peer_hex_explorer.data import (
-    SHOP_CATEGORIES,
+    POI_CATEGORIES,
     build_characterisation,
     coverage_gaps,
     query_characterisation,
@@ -80,7 +80,16 @@ def test_matches_notebook_parquet(raw):
     # most cells a little and the ordering hardly at all
     residents = raw.loc[common, "residential_population"].rank()
     assert residents.corr(reference.loc[common, "residential_population"].rank()) > 0.98
-    for c in set(features) & set(reference.columns) - {"n_stops", "residential_population"}:
+    # workers in OAs with only residential buildings were placed after the notebook ran, rather than dropped; that can
+    # only raise a cell's count. The cells with no workplace figure at all (NULL, median-filled later) are unchanged.
+    workers = raw.loc[common, "workplace_population"] - reference.loc[common, "workplace_population"]
+    assert raw.loc[common, "workplace_population"].isna().equals(reference.loc[common, "workplace_population"].isna())
+    assert (workers.dropna() > -1e-6).all()
+    # the POI counts come from OSM nodes now, and the notebook's from Overture places: a different source, not drift
+    poi = {*POI_CATEGORIES, "n_hospital"}
+    for c in (
+        set(features) & set(reference.columns) - {"n_stops", "residential_population", "workplace_population"} - poi
+    ):
         pd.testing.assert_series_equal(
             raw.loc[common, c], reference.loc[common, c].astype("float64"), check_names=False, rtol=1e-9
         )
@@ -94,17 +103,27 @@ def test_no_northern_ireland(con, raw):
     assert not np.isin(raw.index.to_numpy(), ni).any()
 
 
-def test_shops(con, raw):
-    shops = raw["n_shops"]
-    assert (shops >= 0).all()  # and so no NaN: nothing is left for the median fill
-    shop_cells = con.execute(
-        f"SELECT {GRID}_id FROM read_parquet('{SOURCE}/extract/poi.parquet') WHERE basic_category IN ?",
-        (list(SHOP_CATEGORIES),),
+def test_poi_categories_exist(con):
+    categories = {
+        c for (c,) in con.sql(f"SELECT DISTINCT category FROM read_parquet('{SOURCE}/extract/poi.parquet')").fetchall()
+    }
+    # a renamed or dropped category would otherwise silently zero a feature
+    assert {c for cs in POI_CATEGORIES.values() for c in cs} | {"hospital"} <= categories
+
+
+# when written (OSM, Nov 2026): ~140k shops, ~48k food, ~18k alcohol in E&W cells
+@pytest.mark.parametrize(("column", "minimum"), [("n_shops", 100_000), ("n_food", 30_000), ("n_alcohol", 10_000)])
+def test_poi_counts(con, raw, column, minimum):
+    counts = raw[column]
+    assert (counts >= 0).all()  # and so no NaN: nothing is left for the median fill
+    poi_cells = con.execute(
+        f"SELECT {GRID}_id FROM read_parquet('{SOURCE}/extract/poi.parquet') WHERE category IN ?",
+        (list(POI_CATEGORIES[column]),),
     ).fetchnumpy()[f"{GRID}_id"]
-    # the extract's bbox reaches into Scotland, so only shops in an E&W cell are expected in the counts
-    in_matrix = np.isin(shop_cells, raw.index.to_numpy())
-    assert in_matrix.sum() > 100_000  # i.e. the POI extract has been rerun with the shop categories
-    assert shops.sum() == in_matrix.sum()
+    # the extract's bbox reaches into Scotland, so only POI in an E&W cell are expected in the counts
+    in_matrix = np.isin(poi_cells, raw.index.to_numpy())
+    assert in_matrix.sum() > minimum
+    assert counts.sum() == in_matrix.sum()
 
 
 def test_buildings(con, raw):
